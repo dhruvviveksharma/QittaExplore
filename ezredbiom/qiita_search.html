@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Qiita Study Search</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Crimson+Pro:wght@300;400;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #1a4d2e;
+            --secondary: #4f772d;
+            --accent: #90a955;
+            --light: #ecf39e;
+            --bg: #faf9f6;
+            --text: #2c3e2e;
+            --border: #d4d9cd;
+            --shadow: rgba(26, 77, 46, 0.08);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Crimson Pro', serif;
+            background: linear-gradient(135deg, var(--bg) 0%, #f5f3ed 100%);
+            color: var(--text);
+            line-height: 1.6;
+            min-height: 100vh;
+        }
+
+        #root {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 3rem 2rem;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 4rem;
+            position: relative;
+        }
+
+        .header::before {
+            content: '';
+            position: absolute;
+            top: -20px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 80px;
+            height: 4px;
+            background: linear-gradient(90deg, var(--primary), var(--accent));
+            border-radius: 2px;
+            opacity: 0;
+            animation: slideDown 0.6s ease-out 0.2s forwards;
+        }
+
+        @keyframes slideDown {
+            to {
+                opacity: 1;
+                top: 0;
+            }
+        }
+
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        h1 {
+            font-size: 3.5rem;
+            font-weight: 700;
+            color: var(--primary);
+            margin-bottom: 0.5rem;
+            letter-spacing: -0.02em;
+            animation: fadeInUp 0.8s ease-out;
+        }
+
+        .subtitle {
+            font-size: 1.25rem;
+            color: var(--secondary);
+            font-weight: 400;
+            font-style: italic;
+            animation: fadeInUp 0.8s ease-out 0.1s backwards;
+        }
+
+        .search-container {
+            background: white;
+            border-radius: 16px;
+            padding: 2.5rem;
+            box-shadow: 0 8px 32px var(--shadow);
+            margin-bottom: 3rem;
+            border: 1px solid var(--border);
+            animation: fadeInUp 0.8s ease-out 0.2s backwards;
+        }
+
+        .search-box {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        input[type="text"] {
+            flex: 1;
+            padding: 1rem 1.5rem;
+            font-size: 1.1rem;
+            font-family: 'Crimson Pro', serif;
+            border: 2px solid var(--border);
+            border-radius: 12px;
+            transition: all 0.3s ease;
+            background: var(--bg);
+        }
+
+        input[type="text"]:focus {
+            outline: none;
+            border-color: var(--secondary);
+            box-shadow: 0 0 0 3px rgba(79, 119, 45, 0.1);
+            background: white;
+        }
+
+        button {
+            padding: 1rem 2.5rem;
+            font-size: 1.1rem;
+            font-family: 'Crimson Pro', serif;
+            font-weight: 600;
+            background: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            white-space: nowrap;
+        }
+
+        button:hover {
+            background: var(--secondary);
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(26, 77, 46, 0.2);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .examples {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            margin-top: 1.5rem;
+        }
+
+        .example-label {
+            font-size: 0.9rem;
+            color: var(--secondary);
+            font-weight: 600;
+            margin-right: 0.5rem;
+            font-family: 'IBM Plex Mono', monospace;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-size: 0.75rem;
+        }
+
+        .example-tag {
+            padding: 0.5rem 1rem;
+            background: var(--light);
+            color: var(--primary);
+            border-radius: 20px;
+            font-size: 0.95rem;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            border: 1px solid transparent;
+        }
+
+        .example-tag:hover {
+            background: var(--accent);
+            color: white;
+            transform: translateY(-2px);
+        }
+
+        .toggle-sql {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-top: 1.5rem;
+            cursor: pointer;
+            user-select: none;
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 0.9rem;
+        }
+
+        .toggle-sql input {
+            cursor: pointer;
+            width: 18px;
+            height: 18px;
+            accent-color: var(--primary);
+        }
+
+        .loading {
+            text-align: center;
+            padding: 3rem;
+            color: var(--secondary);
+            font-size: 1.2rem;
+            font-style: italic;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 40px;
+            height: 40px;
+            border: 4px solid var(--light);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 1rem;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .error {
+            background: #fee;
+            border: 2px solid #fcc;
+            color: #c33;
+            padding: 1.5rem;
+            border-radius: 12px;
+            margin-bottom: 2rem;
+        }
+
+        .results-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 2rem;
+            padding-bottom: 1rem;
+            border-bottom: 2px solid var(--border);
+        }
+
+        .results-count {
+            font-size: 1.5rem;
+            color: var(--primary);
+            font-weight: 600;
+        }
+
+        .sql-query {
+            background: #2d2d2d;
+            color: #f8f8f2;
+            padding: 1.5rem;
+            border-radius: 12px;
+            margin-bottom: 2rem;
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 0.9rem;
+            overflow-x: auto;
+            border: 1px solid #444;
+            animation: fadeInUp 0.4s ease-out;
+        }
+
+        .sql-label {
+            color: #90a955;
+            font-weight: 500;
+            margin-bottom: 0.5rem;
+            display: block;
+            text-transform: uppercase;
+            font-size: 0.75rem;
+            letter-spacing: 0.1em;
+        }
+
+        .study-card {
+            background: white;
+            border-radius: 16px;
+            padding: 2rem;
+            margin-bottom: 2rem;
+            border: 1px solid var(--border);
+            box-shadow: 0 4px 16px var(--shadow);
+            transition: all 0.3s ease;
+            animation: fadeInUp 0.5s ease-out backwards;
+        }
+
+        .study-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 8px 32px var(--shadow);
+            border-color: var(--accent);
+        }
+
+        .study-card:nth-child(1) { animation-delay: 0.1s; }
+        .study-card:nth-child(2) { animation-delay: 0.15s; }
+        .study-card:nth-child(3) { animation-delay: 0.2s; }
+        .study-card:nth-child(4) { animation-delay: 0.25s; }
+        .study-card:nth-child(5) { animation-delay: 0.3s; }
+
+        .study-header {
+            margin-bottom: 1.5rem;
+        }
+
+        .study-id {
+            display: inline-block;
+            background: var(--primary);
+            color: white;
+            padding: 0.35rem 0.9rem;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            margin-bottom: 0.75rem;
+            font-family: 'IBM Plex Mono', monospace;
+        }
+
+        .study-title {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: var(--primary);
+            line-height: 1.3;
+            margin-bottom: 1rem;
+        }
+
+        .study-body {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 2rem;
+        }
+
+        .abstract {
+            font-size: 1.05rem;
+            line-height: 1.8;
+            color: var(--text);
+        }
+
+        .abstract-label {
+            font-weight: 600;
+            color: var(--secondary);
+            margin-bottom: 0.5rem;
+            display: block;
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-family: 'IBM Plex Mono', monospace;
+        }
+
+        .study-meta {
+            background: linear-gradient(135deg, var(--bg) 0%, #f0ede0 100%);
+            padding: 1.5rem;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+        }
+
+        .meta-section {
+            margin-bottom: 1.5rem;
+        }
+
+        .meta-section:last-child {
+            margin-bottom: 0;
+        }
+
+        .meta-label {
+            font-weight: 600;
+            color: var(--secondary);
+            margin-bottom: 0.5rem;
+            display: block;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-family: 'IBM Plex Mono', monospace;
+        }
+
+        .meta-value {
+            color: var(--text);
+            font-size: 1rem;
+            display: flex;
+            align-items: flex-start;
+            gap: 0.5rem;
+        }
+
+        .meta-icon {
+            color: var(--accent);
+            font-size: 1.1rem;
+            margin-top: 0.1rem;
+        }
+
+        .no-results {
+            text-align: center;
+            padding: 4rem 2rem;
+            background: white;
+            border-radius: 16px;
+            border: 1px solid var(--border);
+        }
+
+        .no-results-icon {
+            font-size: 4rem;
+            margin-bottom: 1rem;
+            opacity: 0.3;
+        }
+
+        .no-results h3 {
+            color: var(--primary);
+            font-size: 1.75rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .no-results p {
+            color: var(--secondary);
+            font-size: 1.1rem;
+        }
+
+        .footer {
+            text-align: center;
+            margin-top: 4rem;
+            padding-top: 2rem;
+            border-top: 1px solid var(--border);
+            color: var(--secondary);
+            font-size: 0.95rem;
+        }
+
+        .footer a {
+            color: var(--primary);
+            text-decoration: none;
+            font-weight: 600;
+            transition: color 0.2s ease;
+        }
+
+        .footer a:hover {
+            color: var(--accent);
+        }
+
+        @media (max-width: 768px) {
+            h1 {
+                font-size: 2.5rem;
+            }
+
+            .search-box {
+                flex-direction: column;
+            }
+
+            .study-body {
+                grid-template-columns: 1fr;
+            }
+
+            #root {
+                padding: 2rem 1rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState } = React;
+
+        const API_ENDPOINT = 'http://localhost:5001/api/search'; // Update with your backend URL
+
+        function App() {
+            const [query, setQuery] = useState('');
+            const [results, setResults] = useState(null);
+            const [sqlQuery, setSqlQuery] = useState(null);
+            const [loading, setLoading] = useState(false);
+            const [error, setError] = useState(null);
+            const [showSql, setShowSql] = useState(false);
+
+            const exampleQueries = [
+                "Find studies about soil microbiome",
+                "Studies by Rob Knight",
+                "Research on gut bacteria",
+                "Ocean samples",
+                "Studies from UC San Diego"
+            ];
+
+            const handleSearch = async () => {
+                if (!query.trim()) {
+                    console.log('Search aborted: empty query');
+                    return;
+                }
+
+                console.log('Starting search with query:', query);
+                setLoading(true);
+                setError(null);
+                setResults(null);
+                setSqlQuery(null);
+
+                try {
+                    console.log('Fetching from:', API_ENDPOINT);
+                    const response = await fetch(API_ENDPOINT, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ query })
+                    });
+
+                    console.log('Response status:', response.status);
+                    console.log('Response OK:', response.ok);
+
+                    if (!response.ok) {
+                        const errorText = await response.text();
+                        console.error('Response error:', errorText);
+                        throw new Error(`Search failed: ${response.status} ${errorText}`);
+                    }
+
+                    const data = await response.json();
+                    console.log('Received data:', data);
+                    console.log('Number of results:', data.results?.length);
+                    
+                    setResults(data.results);
+                    setSqlQuery(data.sql_query);
+                } catch (err) {
+                    console.error('Search error:', err);
+                    setError(err.message);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const handleKeyPress = (e) => {
+                if (e.key === 'Enter') {
+                    handleSearch();
+                }
+            };
+
+            return (
+                <>
+                    <div className="header">
+                        <h1>Qiita Study Search</h1>
+                        <p className="subtitle">Explore microbiome research with natural language</p>
+                    </div>
+
+                    <div className="search-container">
+                        <div className="search-box">
+                            <input
+                                type="text"
+                                value={query}
+                                onChange={(e) => setQuery(e.target.value)}
+                                onKeyPress={handleKeyPress}
+                                placeholder="e.g., Find studies about soil microbiome by Rob Knight..."
+                            />
+                            <button onClick={handleSearch} disabled={loading || !query.trim()}>
+                                {loading ? 'Searching...' : 'Search'}
+                            </button>
+                        </div>
+
+                        <div className="examples">
+                            <span className="example-label">Try:</span>
+                            {exampleQueries.map((example, idx) => (
+                                <span
+                                    key={idx}
+                                    className="example-tag"
+                                    onClick={() => setQuery(example)}
+                                >
+                                    {example}
+                                </span>
+                            ))}
+                        </div>
+
+                        {sqlQuery && (
+                            <label className="toggle-sql">
+                                <input
+                                    type="checkbox"
+                                    checked={showSql}
+                                    onChange={(e) => setShowSql(e.target.checked)}
+                                />
+                                Show generated SQL query
+                            </label>
+                        )}
+                    </div>
+
+                    {loading && (
+                        <div className="loading">
+                            <div className="spinner"></div>
+                            <p>Searching through Qiita studies...</p>
+                        </div>
+                    )}
+
+                    {error && (
+                        <div className="error">
+                            <strong>Error:</strong> {error}
+                        </div>
+                    )}
+
+                    {showSql && sqlQuery && (
+                        <div className="sql-query">
+                            <span className="sql-label">Generated SQL Query</span>
+                            <div>WHERE {sqlQuery.where_clause}</div>
+                            {sqlQuery.params && sqlQuery.params.length > 0 && (
+                                <div style={{marginTop: '1rem', opacity: 0.7}}>
+                                    Parameters: {JSON.stringify(sqlQuery.params)}
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {results && results.length > 0 && (
+                        <>
+                            <div className="results-header">
+                                <div className="results-count">
+                                    Found {results.length} {results.length === 1 ? 'study' : 'studies'}
+                                </div>
+                            </div>
+
+                            <div className="results-container">
+                                {results.map((study, idx) => (
+                                    <div key={idx} className="study-card">
+                                        <div className="study-header">
+                                            <span className="study-id">Study {study.study_id}</span>
+                                            <h2 className="study-title">{study.study_title}</h2>
+                                        </div>
+
+                                        <div className="study-body">
+                                            <div>
+                                                <span className="abstract-label">Abstract</span>
+                                                <div className="abstract">
+                                                    {study.study_abstract || 'No abstract available.'}
+                                                </div>
+                                            </div>
+
+                                            <div className="study-meta">
+                                                {study.pi_name && (
+                                                    <div className="meta-section">
+                                                        <span className="meta-label">Principal Investigator</span>
+                                                        <div className="meta-value">
+                                                            <span className="meta-icon">👤</span>
+                                                            <span>{study.pi_name}</span>
+                                                        </div>
+                                                        {study.pi_affiliation && (
+                                                            <div className="meta-value" style={{marginTop: '0.5rem'}}>
+                                                                <span className="meta-icon">🏛️</span>
+                                                                <span>{study.pi_affiliation}</span>
+                                                            </div>
+                                                        )}
+                                                        {study.pi_email && (
+                                                            <div className="meta-value" style={{marginTop: '0.5rem'}}>
+                                                                <span className="meta-icon">📧</span>
+                                                                <span>{study.pi_email}</span>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                )}
+
+                                                {study.lab_person_name && (
+                                                    <div className="meta-section">
+                                                        <span className="meta-label">Lab Person</span>
+                                                        <div className="meta-value">
+                                                            <span className="meta-icon">👥</span>
+                                                            <span>{study.lab_person_name}</span>
+                                                        </div>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </>
+                    )}
+
+                    {results && results.length === 0 && (
+                        <div className="no-results">
+                            <div className="no-results-icon">🔬</div>
+                            <h3>No studies found</h3>
+                            <p>Try rephrasing your query or using different keywords</p>
+                        </div>
+                    )}
+
+                    <div className="footer">
+                        Powered by <a href="https://github.com/qiita-spots/qiita/blob/a34dcebc44ea6408340d31ecaf0efd1f78e3cc6b/qiita_pet/templates/redbiom.html#L9" target="_blank" rel="noopener noreferrer">Qiita</a> microbiome database
+                    </div>
+                </>
+            );
+        }
+
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>

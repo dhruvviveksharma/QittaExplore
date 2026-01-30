@@ -1,4 +1,5 @@
-import sys
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 from openai import OpenAI
 from qiita_db.study import Study, StudyPerson
 from qiita_db.sql_connection import TRN
@@ -6,14 +7,17 @@ import pandas as pd
 import json
 from dotenv import load_dotenv
 import os
+
 load_dotenv()
 API_KEY = os.getenv("API_KEY")
 
+app = Flask(__name__)
+CORS(app)  # Enable CORS for React frontend
+
 # Initialize Claude client
 client = OpenAI(
-    # This is the default and can be omitted
-    api_key = API_KEY,
-    base_url = "https://ellm.nrp-nautilus.io/v1"
+    api_key=API_KEY,
+    base_url="https://ellm.nrp-nautilus.io/v1"
 )
 
 def search_studies_with_sql(custom_sql_where="", params=None):
@@ -29,8 +33,8 @@ def search_studies_with_sql(custom_sql_where="", params=None):
     
     Returns
     -------
-    pd.DataFrame
-        DataFrame with study information
+    list
+        List of dictionaries with study information
     """
     if params is None:
         params = []
@@ -57,16 +61,25 @@ def search_studies_with_sql(custom_sql_where="", params=None):
         results = TRN.execute_fetchindex()
     
     if not results:
-        return pd.DataFrame()
+        return []
     
-    df = pd.DataFrame(results, columns=[
-        'study_id', 'study_title', 'study_abstract', 
-        'pi_name', 'pi_email', 'pi_affiliation', 'lab_person_name'
-    ])
+    # Convert to list of dictionaries
+    studies = []
+    for row in results:
+        studies.append({
+            'study_id': row[0],
+            'study_title': row[1],
+            'study_abstract': row[2],
+            'pi_name': row[3],
+            'pi_email': row[4],
+            'pi_affiliation': row[5],
+            'lab_person_name': row[6]
+        })
     
-    return df
+    return studies
 
 def llm_query_to_sql(user_query):
+    """Convert natural language query to SQL using LLM"""
     system_prompt = """You are a SQL query generator for a microbiome study database (Qiita).
 
         Available tables and columns:
@@ -130,63 +143,63 @@ def llm_query_to_sql(user_query):
             "params": [f"%{keywords}%", f"%{keywords}%"]
         }
 
-
-def smart_search_studies(user_query):
-    """
-    Search studies using natural language query powered by LLM
-    
-    Parameters
-    ----------
-    user_query : str
-        Natural language query (e.g., "Find studies about soil by Rob Knight")
-    
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame with matching studies
-    """
-    print(f"Processing query: '{user_query}'")
-    
-    # Convert to SQL using LLM
-    sql_query = llm_query_to_sql(user_query)
-    
-    print("Generated SQL query:", sql_query)
-    print(f"Generated WHERE clause: {sql_query['where_clause']}")
-    print(f"Parameters: {sql_query['params']}")
-    
-    # Execute search
-    results = search_studies_with_sql(
-        custom_sql_where=sql_query['where_clause'],
-        params=sql_query['params']
-    )
-    
-    return results
-
-
-# Example usage:
-if __name__ == "__main__":
-    print("=" * 80)
-    print("LLM-POWERED QIITA STUDY SEARCH")
-    print("=" * 80)
-    
-    # Example queries
-    queries = [
-        "Find me studies that talk about Sirius Black"
-    ]
-    
-    for query in queries:
-        print(f"\n{'=' * 80}")
-        print(f"QUERY: {query}")
-        print('=' * 80)
+@app.route('/api/search', methods=['POST'])
+def search():
+    """API endpoint for searching studies"""
+    print("\n" + "="*80)
+    print("NEW SEARCH REQUEST RECEIVED")
+    print("="*80)
+    try:
+        data = request.get_json()
+        print(f"Request data: {data}")
+        user_query = data.get('query', '')
+        print(f"Extracted query: '{user_query}'")
         
-        results = smart_search_studies(query)
+        if not user_query:
+            print("ERROR: Empty query")
+            return jsonify({'error': 'Query is required'}), 400
         
-        if not results.empty:
-            print(f"\nFound {len(results)} studies:\n")
-            for _, row in results.iterrows():
-                print(f"Study {row['study_id']}: {row['study_title']}")
-                print(f"  PI: {row['pi_name']} ({row['pi_affiliation']})")
-                print(f"  Abstract: {row['study_abstract'][:200]}...")
-                print()
-        else:
-            print("No studies found matching this query")
+        print(f"Processing query: '{user_query}'")
+        
+        # Convert to SQL using LLM
+        print("Calling LLM to generate SQL...")
+        sql_query = llm_query_to_sql(user_query)
+        
+        print(f"Generated WHERE clause: {sql_query['where_clause']}")
+        print(f"Parameters: {sql_query['params']}")
+        
+        # Execute search
+        print("Executing database query...")
+        results = search_studies_with_sql(
+            custom_sql_where=sql_query['where_clause'],
+            params=sql_query['params']
+        )
+        
+        print(f"Found {len(results)} results")
+        print("="*80 + "\n")
+        
+        return jsonify({
+            'results': results,
+            'sql_query': sql_query,
+            'count': len(results)
+        })
+        
+    except Exception as e:
+        print(f"ERROR: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        print("="*80 + "\n")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/health', methods=['GET'])
+def health():
+    """Health check endpoint"""
+    return jsonify({'status': 'ok'})
+
+if __name__ == '__main__':
+    print("=" * 80)
+    print("QIITA SEARCH API SERVER")
+    print("=" * 80)
+    print("Starting Flask server on http://localhost:5001")
+    print("=" * 80)
+    app.run(debug=True, host='0.0.0.0', port=5001)
