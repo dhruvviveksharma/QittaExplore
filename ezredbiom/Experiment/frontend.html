@@ -207,6 +207,58 @@
             transform: translateY(-2px);
         }
 
+        .toggle-sql {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-top: 1.5rem;
+            cursor: pointer;
+            user-select: none;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.9rem;
+        }
+
+        .toggle-sql input {
+            cursor: pointer;
+            width: 18px;
+            height: 18px;
+            accent-color: var(--blue);
+        }
+
+        .sql-query {
+            background: #2d2d2d;
+            color: #f8f8f2;
+            padding: 1.5rem;
+            border-radius: 12px;
+            margin-bottom: 2rem;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.9rem;
+            overflow-x: auto;
+            border: 1px solid #444;
+            animation: fadeInUp 0.4s ease-out;
+        }
+
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .sql-label {
+            color: #90a955;
+            font-weight: 500;
+            margin-bottom: 0.5rem;
+            display: block;
+            text-transform: uppercase;
+            font-size: 0.75rem;
+            letter-spacing: 0.1em;
+        }
+
         /* Stats Bar */
         .stats-bar {
             display: flex;
@@ -772,11 +824,11 @@
         function App() {
             const [query, setQuery] = useState('');
             const [studies, setStudies] = useState([]);
-            const [loading, setLoading] = useState(true);
+            const [loading, setLoading] = useState(false);
             const [searching, setSearching] = useState(false);
             const [error, setError] = useState(null);
-            const [selectedStudy, setSelectedStudy] = useState(null);
-            const [showModal, setShowModal] = useState(false);
+            const [showSql, setShowSql] = useState(false);
+            const [sqlQuery, setSqlQuery] = useState(null);
 
             const exampleQueries = [
                 "soil microbiome",
@@ -786,36 +838,12 @@
                 "UC San Diego"
             ];
 
-            // Load initial studies on mount
-            useEffect(() => {
-                loadInitialStudies();
-            }, []);
-
-            const loadInitialStudies = async () => {
-                setLoading(true);
-                setError(null);
-                
-                try {
-                    const response = await fetch(`${API_BASE}/studies?limit=50`);
-                    
-                    if (!response.ok) {
-                        throw new Error('Failed to load studies');
-                    }
-
-                    const data = await response.json();
-                    setStudies(data.results);
-                } catch (err) {
-                    setError(err.message);
-                } finally {
-                    setLoading(false);
-                }
-            };
-
             const handleSearch = async () => {
                 if (!query.trim()) return;
 
                 setSearching(true);
                 setError(null);
+                setSqlQuery(null);
 
                 try {
                     const response = await fetch(`${API_BASE}/search`, {
@@ -832,6 +860,7 @@
 
                     const data = await response.json();
                     setStudies(data.results);
+                    setSqlQuery(data.sql_query);
                 } catch (err) {
                     setError(err.message);
                 } finally {
@@ -845,25 +874,10 @@
                 }
             };
 
-            const openStudyDetails = async (studyId) => {
-                try {
-                    // const response = await fetch(`${API_BASE}/study/${studyId}`);
-                    const response = await fetch(`https://localhost:21174/api/v1/${studyId}`);
-                    
-                    if (!response.ok) {
-                        throw new Error('Failed to load study details');
-                    }
-
-                    const data = await response.json();
-                    setSelectedStudy(data);
-                    setShowModal(true);
-                } catch (err) {
-                    alert(`Error: ${err.message}`);
-                }
-            };
-
-            const downloadStudyData = (studyId) => {
-                window.open(`${API_BASE}/study/${studyId}/download`, '_blank');
+            const clearResults = () => {
+                setStudies([]);
+                setQuery('');
+                setSqlQuery(null);
             };
 
             return (
@@ -891,13 +905,14 @@
                             >
                                 {searching ? '⏳ Searching...' : '🔍 Search'}
                             </button>
-                            <button 
-                                className="btn btn-secondary" 
-                                onClick={loadInitialStudies}
-                                disabled={loading}
-                            >
-                                ↻ Reset
-                            </button>
+                            {studies.length > 0 && (
+                                <button 
+                                    className="btn btn-secondary" 
+                                    onClick={clearResults}
+                                >
+                                    ✕ Clear
+                                </button>
+                            )}
                         </div>
 
                         <div className="examples">
@@ -912,7 +927,30 @@
                                 </span>
                             ))}
                         </div>
+
+                        {sqlQuery && (
+                            <label className="toggle-sql">
+                                <input
+                                    type="checkbox"
+                                    checked={showSql}
+                                    onChange={(e) => setShowSql(e.target.checked)}
+                                />
+                                Show generated SQL query
+                            </label>
+                        )}
                     </div>
+
+                    {showSql && sqlQuery && (
+                        <div className="sql-query">
+                            <span className="sql-label">Generated SQL Query</span>
+                            <div>WHERE {sqlQuery.where_clause}</div>
+                            {sqlQuery.params && sqlQuery.params.length > 0 && (
+                                <div style={{marginTop: '1rem', opacity: 0.7}}>
+                                    Parameters: {JSON.stringify(sqlQuery.params)}
+                                </div>
+                            )}
+                        </div>
+                    )}
 
                     {error && (
                         <div className="error">
@@ -923,12 +961,14 @@
                         </div>
                     )}
 
-                    {loading ? (
+                    {searching && (
                         <div className="loading">
                             <div className="spinner"></div>
-                            <p>Loading studies...</p>
+                            <p>Searching through Qiita studies...</p>
                         </div>
-                    ) : studies.length > 0 ? (
+                    )}
+
+                    {!searching && studies.length > 0 ? (
                         <>
                             <div className="stats-bar">
                                 <div>
@@ -944,11 +984,6 @@
                                             <span className="study-id-badge">
                                                 ID {study.study_id}
                                             </span>
-                                            {study.visibility && (
-                                                <span className={`visibility-badge visibility-${study.visibility}`}>
-                                                    {study.visibility}
-                                                </span>
-                                            )}
                                         </div>
 
                                         <h3 className="study-title">{study.study_title}</h3>
@@ -970,230 +1005,30 @@
                                                     <span>{study.pi_affiliation}</span>
                                                 </div>
                                             )}
-                                            {study.artifact_count > 0 && (
+                                            {study.lab_person_name && (
                                                 <div className="meta-item">
-                                                    <span className="meta-icon">📊</span>
-                                                    <span>{study.artifact_count} artifacts</span>
+                                                    <span className="meta-icon">👥</span>
+                                                    <span>Lab: {study.lab_person_name}</span>
                                                 </div>
                                             )}
-                                        </div>
-
-                                        <div className="card-actions">
-                                            <button 
-                                                className="btn btn-small"
-                                                onClick={() => openStudyDetails(study.study_id)}
-                                            >
-                                                View Details
-                                            </button>
-                                            <button 
-                                                className="btn btn-secondary btn-small"
-                                                onClick={() => downloadStudyData(study.study_id)}
-                                            >
-                                                📥 Download
-                                            </button>
                                         </div>
                                     </div>
                                 ))}
                             </div>
                         </>
-                    ) : (
+                    ) : !searching && studies.length === 0 && query ? (
                         <div className="empty-state">
                             <div className="empty-icon">🔬</div>
                             <h3 className="empty-title">No studies found</h3>
-                            <p className="empty-text">Try adjusting your search or browse all studies</p>
+                            <p className="empty-text">Try different keywords or refine your search</p>
                         </div>
-                    )}
-
-                    {showModal && selectedStudy && (
-                        <div className="modal-overlay" onClick={() => setShowModal(false)}>
-                            <div className="modal" onClick={(e) => e.stopPropagation()}>
-                                <div className="modal-header">
-                                    <div style={{flex: 1}}>
-                                        <div className="modal-title">{selectedStudy.study_title}</div>
-                                        <div className="modal-subtitle">
-                                            Study ID: {selectedStudy.study_id} 
-                                            {selectedStudy.ebi_study_accession && ` • ${selectedStudy.ebi_study_accession}`}
-                                        </div>
-                                    </div>
-                                    <button className="close-btn" onClick={() => setShowModal(false)}>
-                                        ×
-                                    </button>
-                                </div>
-
-                                <div className="modal-body">
-                                    {/* Quick Info Grid */}
-                                    <div className="info-grid">
-                                        {selectedStudy.sample_count && (
-                                            <div className="info-item">
-                                                <div className="info-label">Samples</div>
-                                                <div className="info-value">{selectedStudy.sample_count}</div>
-                                            </div>
-                                        )}
-                                        {selectedStudy.artifacts && (
-                                            <div className="info-item">
-                                                <div className="info-label">Artifacts</div>
-                                                <div className="info-value">{selectedStudy.artifacts.length}</div>
-                                            </div>
-                                        )}
-                                        {selectedStudy.ebi_submission_status && (
-                                            <div className="info-item">
-                                                <div className="info-label">EBI Status</div>
-                                                <div className="info-value">{selectedStudy.ebi_submission_status}</div>
-                                            </div>
-                                        )}
-                                        {selectedStudy.shared_with && selectedStudy.shared_with.length > 0 && (
-                                            <div className="info-item">
-                                                <div className="info-label">Shared With</div>
-                                                <div className="info-value">{selectedStudy.shared_with.length} users</div>
-                                            </div>
-                                        )}
-                                    </div>
-
-                                    {/* Abstract */}
-                                    <div className="detail-section">
-                                        <div className="detail-label">📄 Abstract</div>
-                                        <div className="detail-value">
-                                            {selectedStudy.study_abstract || 'No abstract available.'}
-                                        </div>
-                                    </div>
-
-                                    {/* Study Tags */}
-                                    {selectedStudy.tags && selectedStudy.tags.length > 0 && (
-                                        <div className="detail-section">
-                                            <div className="detail-label">🏷️ Study Tags</div>
-                                            <div className="tags-container">
-                                                {selectedStudy.tags.map((tag, idx) => {
-                                                    const isAdmin = tag.toLowerCase().includes('admin');
-                                                    const isAssigned = tag.toLowerCase().includes('assigned');
-                                                    const className = isAdmin ? 'tag tag-admin' : isAssigned ? 'tag tag-assigned' : 'tag';
-                                                    return <span key={idx} className={className}>{tag}</span>;
-                                                })}
-                                            </div>
-                                        </div>
-                                    )}
-
-                                    {/* Principal Investigator */}
-                                    {selectedStudy.pi_name && (
-                                        <div className="detail-section">
-                                            <div className="detail-label">👤 Principal Investigator</div>
-                                            <div className="pi-card">
-                                                <div className="pi-name">{selectedStudy.pi_name}</div>
-                                                {selectedStudy.pi_affiliation && (
-                                                    <div className="pi-detail">
-                                                        <span className="pi-icon">🏛️</span>
-                                                        <span>{selectedStudy.pi_affiliation}</span>
-                                                    </div>
-                                                )}
-                                                {selectedStudy.pi_email && (
-                                                    <div className="pi-detail">
-                                                        <span className="pi-icon">📧</span>
-                                                        <span>{selectedStudy.pi_email}</span>
-                                                    </div>
-                                                )}
-                                            </div>
-                                        </div>
-                                    )}
-
-                                    {/* Lab Person */}
-                                    {selectedStudy.lab_person && selectedStudy.lab_person.name && (
-                                        <div className="detail-section">
-                                            <div className="detail-label">👥 Lab Contact</div>
-                                            <div className="detail-value">
-                                                <strong>{selectedStudy.lab_person.name}</strong>
-                                                {selectedStudy.lab_person.affiliation && <><br/>{selectedStudy.lab_person.affiliation}</>}
-                                                {selectedStudy.lab_person.email && <><br/>📧 {selectedStudy.lab_person.email}</>}
-                                            </div>
-                                        </div>
-                                    )}
-
-                                    {/* Publications */}
-                                    {selectedStudy.publications && selectedStudy.publications.length > 0 && (
-                                        <div className="detail-section">
-                                            <div className="detail-label">📚 Publications</div>
-                                            <div className="publications-list">
-                                                {selectedStudy.publications.map((pub, idx) => (
-                                                    <div key={idx} className="publication-item">
-                                                        {pub.doi && (
-                                                            <div>
-                                                                DOI: <a href={`https://doi.org/${pub.doi}`} target="_blank" rel="noopener noreferrer">
-                                                                    {pub.doi}
-                                                                </a>
-                                                            </div>
-                                                        )}
-                                                        {pub.pubmed_id && (
-                                                            <div>
-                                                                PubMed: <a href={`https://pubmed.ncbi.nlm.nih.gov/${pub.pubmed_id}`} target="_blank" rel="noopener noreferrer">
-                                                                    {pub.pubmed_id}
-                                                                </a>
-                                                            </div>
-                                                        )}
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        </div>
-                                    )}
-
-                                    {/* Data Types */}
-                                    {selectedStudy.data_types && selectedStudy.data_types.length > 0 && (
-                                        <div className="detail-section">
-                                            <div className="detail-label">🔬 Data Types</div>
-                                            <div className="data-types-list">
-                                                {selectedStudy.data_types.map((dataType, idx) => (
-                                                    <span key={idx} className="data-type-badge">{dataType}</span>
-                                                ))}
-                                            </div>
-                                        </div>
-                                    )}
-
-                                    {/* Sample Categories */}
-                                    {selectedStudy.sample_categories && selectedStudy.sample_categories.length > 0 && (
-                                        <div className="detail-section">
-                                            <div className="detail-label">📋 Sample Metadata Categories</div>
-                                            <div className="detail-value">
-                                                {selectedStudy.sample_categories.join(', ')}
-                                            </div>
-                                        </div>
-                                    )}
-
-                                    {/* Artifacts */}
-                                    {selectedStudy.artifacts && selectedStudy.artifacts.length > 0 && (
-                                        <div className="detail-section">
-                                            <div className="detail-label">📊 Artifacts ({selectedStudy.artifacts.length})</div>
-                                            <div className="artifacts-list">
-                                                {selectedStudy.artifacts.map((artifact, idx) => (
-                                                    <div key={idx} className="artifact-item">
-                                                        <div className="artifact-info">
-                                                            <div className="artifact-name">
-                                                                {artifact.name || `Artifact ${artifact.artifact_id}`}
-                                                            </div>
-                                                            <div className="artifact-meta">
-                                                                Type: {artifact.artifact_type} • ID: {artifact.artifact_id}
-                                                                {artifact.prep_count > 0 && ` • ${artifact.prep_count} prep template(s)`}
-                                                            </div>
-                                                        </div>
-                                                        <span className={`visibility-badge visibility-${artifact.visibility}`}>
-                                                            {artifact.visibility}
-                                                        </span>
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        </div>
-                                    )}
-
-                                    {/* Download Button */}
-                                    <div style={{marginTop: '2rem', paddingTop: '2rem', borderTop: `1px solid var(--border)`}}>
-                                        <button 
-                                            className="btn"
-                                            onClick={() => downloadStudyData(selectedStudy.study_id)}
-                                            style={{width: '100%'}}
-                                        >
-                                            📥 Download All Study Data & Metadata (ZIP)
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
+                    ) : !searching && studies.length === 0 && !query ? (
+                        <div className="empty-state">
+                            <div className="empty-icon">🔍</div>
+                            <h3 className="empty-title">Start Searching</h3>
+                            <p className="empty-text">Enter keywords to search through the Qiita microbiome database</p>
                         </div>
-                    )}
+                    ) : null}
 
                     <div className="footer">
                         Powered by <a href="https://github.com/qiita-spots/qiita" target="_blank" rel="noopener noreferrer">Qiita</a> microbiome database
