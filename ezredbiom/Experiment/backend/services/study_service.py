@@ -1,3 +1,4 @@
+# backend/services/study_service.py
 from qiita_db.sql_connection import TRN
 
 def search_studies_with_sql(custom_sql_where="", params=None):

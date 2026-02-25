@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Qiita Explorer</title>
+
+  <!-- Fonts -->
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet" />
+
+  <!--
+    Styles — load order matters:
+      1. variables  (design tokens, reset — everything else inherits from here)
+      2. layout     (sidebar, topbar, shell)
+      3. components (buttons, modals, forms, toasts)
+      4. search     (search view + study cards)
+      5. project    (project detail view)
+      6. chat       (chat interface)
+  -->
+  <link rel="stylesheet" href="styles/variables.css" />
+  <link rel="stylesheet" href="styles/layout.css" />
+  <link rel="stylesheet" href="styles/components.css" />
+  <link rel="stylesheet" href="styles/search.css" />
+  <link rel="stylesheet" href="styles/project.css" />
+  <link rel="stylesheet" href="styles/chat.css" />
+
+  <!-- React (must be before all Babel scripts) -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <!--
+    Scripts — load order matters:
+      1. utils/api      (apiFetch, USER_ID, PROJECT_COLORS — needed by everything)
+      2. utils/helpers  (formatDate, formatTime)
+      3. components/*   (Toast → ProjectModal → Sidebar → StudyCard)
+      4. views/*        (SearchView → ProjectView → ChatView)
+      5. App            (root — must come last; calls ReactDOM.render)
+  -->
+  <script type="text/babel" src="utils/api.js"></script>
+  <script type="text/babel" src="utils/helpers.js"></script>
+  <script type="text/babel" src="components/Toast.js"></script>
+  <script type="text/babel" src="components/ProjectModal.js"></script>
+  <script type="text/babel" src="components/Sidebar.js"></script>
+  <script type="text/babel" src="components/StudyCard.js"></script>
+  <script type="text/babel" src="views/SearchView.js"></script>
+  <script type="text/babel" src="views/ProjectView.js"></script>
+  <script type="text/babel" src="views/ChatView.js"></script>
+  <script type="text/babel" src="App.js"></script>
+</body>
+</html>

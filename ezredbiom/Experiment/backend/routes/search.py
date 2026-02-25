@@ -1,3 +1,4 @@
+# backend/routes/search.py
 from services.llm import llm_query_to_sql
 from services.study_service import search_studies_with_sql
 from flask import Blueprint, request, jsonify

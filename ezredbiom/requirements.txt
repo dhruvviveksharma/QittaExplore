@@ -6,6 +6,9 @@ python-dotenv>=1.0.0
 # OpenAI (new API, old Python OK)
 openai>=1.0,<2.0
 
+# NoSQL cart store
+tinydb>=4.8,<5.0
+
 # Data stack (Python 3.9 ceiling)
 pandas>=1.5,<2.0
 numpy<2.0
