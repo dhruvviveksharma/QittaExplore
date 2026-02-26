@@ -6,3 +6,17 @@
 {"sessionId": "576eb6", "runId": "pre-fix", "hypothesisId": "H1", "location": "Experiment/backend/run.py:search", "message": "search_request", "data": {"query": "Voldemort"}, "timestamp": 1771996688373}
 {"sessionId": "576eb6", "runId": "pre-fix", "hypothesisId": "H2", "location": "Experiment/backend/run.py:search", "message": "search_response", "data": {"where_clause": "(s.study_title ILIKE %s OR s.study_abstract ILIKE %s)", "params": ["%voldemort%", "%voldemort%"], "count": 4}, "timestamp": 1771996690628}
 {"sessionId":"576eb6","runId":"pre-fix","hypothesisId":"H1","location":"Experiment/frontend/app.js:handleSearch","message":"search_response","data":{"query":"Voldemort","count":4},"timestamp":1771996690633}
+{"sessionId":"576eb6","runId":"pre-fix","hypothesisId":"H4","location":"Experiment/frontend/app.js:fetchProjects","message":"projects_loaded","data":{"count":4},"timestamp":1771996929107}
+{"sessionId":"576eb6","runId":"pre-fix","hypothesisId":"H4","location":"Experiment/frontend/app.js:fetchProjects","message":"projects_loaded","data":{"count":4},"timestamp":1771997295106}
+{"sessionId":"576eb6","runId":"pre-fix","hypothesisId":"H4","location":"Experiment/frontend/app.js:fetchProjects","message":"projects_loaded","data":{"count":4},"timestamp":1771997308940}
+{"sessionId":"576eb6","runId":"pre-fix","hypothesisId":"H4","location":"Experiment/frontend/app.js:fetchProjects","message":"projects_loaded","data":{"count":4},"timestamp":1771997399612}
+{"sessionId":"576eb6","runId":"pre-fix","hypothesisId":"H4","location":"Experiment/frontend/app.js:fetchProjects","message":"projects_loaded","data":{"count":4},"timestamp":1771997428893}
+{"sessionId":"576eb6","runId":"pre-fix","hypothesisId":"H4","location":"Experiment/frontend/app.js:fetchProjects","message":"projects_loaded","data":{"count":4},"timestamp":1771997459138}
+{"sessionId": "576eb6", "runId": "pre-fix", "hypothesisId": "H1", "location": "Experiment/backend/run.py:search", "message": "search_request", "data": {"query": "id 1"}, "timestamp": 1771997586933}
+{"sessionId": "576eb6", "runId": "pre-fix", "hypothesisId": "H2", "location": "Experiment/backend/run.py:search", "message": "search_response", "data": {"where_clause": "(s.study_title ILIKE %s OR s.study_abstract ILIKE %s)", "params": ["%id 1%", "%id 1%"], "count": 0}, "timestamp": 1771997589062}
+{"sessionId":"576eb6","runId":"pre-fix","hypothesisId":"H1","location":"Experiment/frontend/app.js:handleSearch","message":"search_response","data":{"query":"id 1","count":0},"timestamp":1771997589068}
+{"sessionId":"576eb6","runId":"pre-fix","hypothesisId":"H4","location":"Experiment/frontend/app.js:fetchProjects","message":"projects_loaded","data":{"count":4},"timestamp":1771997893712}
+{"sessionId":"576eb6","runId":"pre-fix","hypothesisId":"H4","location":"Experiment/frontend/app.js:fetchProjects","message":"projects_loaded","data":{"count":4},"timestamp":1771998927110}
+{"sessionId":"576eb6","runId":"pre-fix","hypothesisId":"H4","location":"Experiment/frontend/app.js:fetchProjects","message":"projects_loaded","data":{"count":4},"timestamp":1772000268898}
+{"sessionId":"576eb6","runId":"pre-fix","hypothesisId":"H4","location":"Experiment/frontend/app.js:fetchProjects","message":"projects_loaded","data":{"count":4},"timestamp":1772000351781}
+{"sessionId":"576eb6","runId":"pre-fix","hypothesisId":"H4","location":"Experiment/frontend/app.js:fetchProjects","message":"projects_loaded","data":{"count":4},"timestamp":1772000368816}
