@@ -1,14 +1,13 @@
-const { useState, useEffect, useRef, useCallback, useMemo } = React;
+const { useState, useEffect, useRef, useMemo, useCallback } = React;
 
-const API = 'http://localhost:5001/api';
+const API     = 'http://localhost:5001/api';
 const USER_ID = 'default';
 
-// ─── tiny helpers ────────────────────────────────────────────────────────────
-const api = (path, opts = {}) =>
+// ─── helpers ──────────────────────────────────────────────────────────────────
+const apiFetch = (path, opts = {}) =>
   fetch(`${API}${path}`, { headers: { 'Content-Type': 'application/json' }, ...opts });
-
-const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body) });
-const del  = (path)       => api(path, { method: 'DELETE' });
+const apiPost  = (path, body)  => apiFetch(path, { method: 'POST',   body: JSON.stringify(body) });
+const apiDel   = (path)        => apiFetch(path, { method: 'DELETE' });
 
 async function parseSSE(response, { onToken, onDone, onError }, signal) {
   const reader = response.body.getReader();
@@ -21,9 +20,9 @@ async function parseSSE(response, { onToken, onDone, onError }, signal) {
     buf += dec.decode(value, { stream: true });
     let i;
     while ((i = buf.indexOf('\n\n')) !== -1) {
-      const chunk = buf.slice(0, i); buf = buf.slice(i + 2);
+      const raw = buf.slice(0, i); buf = buf.slice(i + 2);
       let type = 'message', data = '{}';
-      for (const ln of chunk.split('\n')) {
+      for (const ln of raw.split('\n')) {
         if (ln.startsWith('event:')) type = ln.slice(6).trim();
         if (ln.startsWith('data:'))  data = ln.slice(5).trim();
       }
@@ -36,262 +35,227 @@ async function parseSSE(response, { onToken, onDone, onError }, signal) {
   }
 }
 
-// ─── App ─────────────────────────────────────────────────────────────────────
+// ─── Root ─────────────────────────────────────────────────────────────────────
 function App() {
-  // ── sidebar selection ──
-  const [sidebarTab, setSidebarTab] = useState('projects'); // 'projects' | 'chats'
+  // Projects list (sidebar)
+  const [projects,    setProjects]    = useState([]);
+  const [projLoading, setProjLoading] = useState(true);
 
-  // ── projects ──
-  const [projects,   setProjects]   = useState([]);
-  const [activeProj, setActiveProj] = useState('');   // project_id
-  const [project,    setProject]    = useState(null); // full project obj
-  const [showNewProj,setShowNewProj]= useState(false);
-  const [newProjName,setNewProjName]= useState('');
+  // Which project folder is open in sidebar
+  const [openProjId,  setOpenProjId]  = useState(null);
+  const [openProject, setOpenProject] = useState(null); // full detail incl studies+chats
 
-  // ── project chats ──
-  const [projChats,   setProjChats]   = useState([]);
-  const [activeProjChat, setActiveProjChat] = useState('');
-  const [projChat,    setProjChat]    = useState(null);
+  // Active view object
+  // { type: 'project-chat', projId, chatId }
+  // { type: 'global-chat',  chatId }
+  // { type: 'browse' }
+  const [view, setView] = useState({ type: 'browse' });
 
-  // ── global chats ──
-  const [globalChats,   setGlobalChats]   = useState([]);
-  const [activeGlobChat,setActiveGlobChat]= useState('');
-  const [globChat,      setGlobChat]      = useState(null);
+  // Chat message cache keyed by chatId — never reset on re-render
+  const [chatCache, setChatCache] = useState({});
 
-  // ── main mode ──
-  const [mode, setMode] = useState('browse'); // 'browse' | 'chat'
+  // Global chats
+  const [globalChats, setGlobalChats] = useState([]);
 
-  // ── browse / search ──
-  const [query,       setQuery]       = useState('');
-  const [results,     setResults]     = useState([]);
-  const [searching,   setSearching]   = useState(false);
-  const [searched,    setSearched]    = useState(false);
-  const [sqlQuery,    setSqlQuery]    = useState(null);
-  const [showSql,     setShowSql]     = useState(false);
-  const [firstStudies,setFirstStudies]= useState([]);
-  const [firstLoading,setFirstLoading]= useState(false);
+  // Per-project folder inner tab
+  const [projInnerTab, setProjInnerTab] = useState('chats');
 
-  // ── selected context studies (global chat) ──
+  // Browse / search
+  const [query,        setQuery]        = useState('');
+  const [results,      setResults]      = useState([]);
+  const [firstStudies, setFirstStudies] = useState([]);
+  const [searching,    setSearching]    = useState(false);
+  const [searched,     setSearched]     = useState(false);
+  const [sqlQuery,     setSqlQuery]     = useState(null);
+  const [showSql,      setShowSql]      = useState(false);
+
+  // Global chat context studies
   const [ctxStudies, setCtxStudies] = useState([]);
 
-  // ── composer ──
+  // New project form
+  const [showNewProj, setShowNewProj] = useState(false);
+  const [newProjName, setNewProjName] = useState('');
+
+  // Composer
   const [input,   setInput]   = useState('');
   const [sending, setSending] = useState(false);
   const [compErr, setCompErr] = useState('');
 
-  // ── modal ──
+  // Study detail modal
   const [modalStudy, setModalStudy] = useState(null);
 
   const abortRef  = useRef(null);
   const taRef     = useRef(null);
   const bottomRef = useRef(null);
 
-  // ── auto-resize textarea ──
+  // ── auto-size textarea ───────────────────────────────────────────────────────
   useEffect(() => {
     if (!taRef.current) return;
     taRef.current.style.height = '0';
     taRef.current.style.height = Math.min(200, taRef.current.scrollHeight) + 'px';
   }, [input]);
 
-  // ── scroll to bottom on new messages ──
-  const messages = mode === 'chat'
-    ? (activeProj ? projChat?.messages || [] : globChat?.messages || [])
-    : [];
-
+  // ── scroll to bottom on new tokens ──────────────────────────────────────────
+  const activeMsgs = view.chatId ? (chatCache[view.chatId]?.messages || []) : [];
+  const lastContent = activeMsgs[activeMsgs.length - 1]?.content;
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length, messages[messages.length - 1]?.content?.length]);
+  }, [activeMsgs.length, lastContent]);
 
-  // ── initial load ──
-  useEffect(() => { loadProjects(); loadGlobalChats(); loadFirstStudies(); }, []);
-
-  // ── load project when activeProj changes ──
-  useEffect(() => {
-    if (!activeProj) { setProject(null); setProjChats([]); setProjChat(null); return; }
-    loadProject(activeProj);
-    loadProjChats(activeProj);
-    setActiveProjChat('');
-    setProjChat(null);
-  }, [activeProj]);
-
-  // ── load chat when activeProjChat changes ──
-  useEffect(() => {
-    if (!activeProj || !activeProjChat) { setProjChat(null); return; }
-    loadProjChat(activeProj, activeProjChat);
-  }, [activeProj, activeProjChat]);
-
-  // ── load global chat ──
-  useEffect(() => {
-    if (!activeGlobChat) { setGlobChat(null); return; }
-    loadGlobChat(activeGlobChat);
-  }, [activeGlobChat]);
-
-  // ── cleanup abort ──
+  // ── cleanup ──────────────────────────────────────────────────────────────────
   useEffect(() => () => abortRef.current?.abort(), []);
 
-  // ─── loaders ────────────────────────────────────────────────────
+  // ── initial load ─────────────────────────────────────────────────────────────
+  useEffect(() => { loadProjects(); loadGlobalChats(); loadFirstStudies(); }, []);
+
+  // ── when openProjId changes, fetch its detail ─────────────────────────────
+  useEffect(() => {
+    if (!openProjId) { setOpenProject(null); return; }
+    fetchProjectDetail(openProjId);
+  }, [openProjId]);
+
+  // ─── loaders ──────────────────────────────────────────────────────────────────
   const loadProjects = async () => {
-    const res = await api(`/projects?user_id=${USER_ID}`);
-    if (!res.ok) return;
-    const { projects: list } = await res.json();
-    setProjects(list || []);
-    if (!activeProj && list?.length) setActiveProj(list[0].project_id);
+    setProjLoading(true);
+    try {
+      const res = await apiFetch(`/projects?user_id=${USER_ID}`);
+      if (res.ok) { const d = await res.json(); setProjects(d.projects || []); }
+    } finally { setProjLoading(false); }
   };
 
-  const loadProject = async (pid) => {
-    const res = await api(`/projects/${pid}?user_id=${USER_ID}`);
-    if (res.ok) setProject(await res.json());
-  };
-
-  const loadProjChats = async (pid) => {
-    const res = await api(`/projects/${pid}/chats?user_id=${USER_ID}`);
-    if (res.ok) { const d = await res.json(); setProjChats(d.chats || []); }
-  };
-
-  const loadProjChat = async (pid, cid) => {
-    const res = await api(`/projects/${pid}/chats/${cid}?user_id=${USER_ID}`);
-    if (res.ok) setProjChat(await res.json());
+  const fetchProjectDetail = async (pid) => {
+    const res = await apiFetch(`/projects/${pid}?user_id=${USER_ID}`);
+    if (res.ok) setOpenProject(await res.json());
   };
 
   const loadGlobalChats = async () => {
-    const res = await api(`/global-chats?user_id=${USER_ID}`);
+    const res = await apiFetch(`/global-chats?user_id=${USER_ID}`);
     if (res.ok) { const d = await res.json(); setGlobalChats(d.chats || []); }
   };
 
-  const loadGlobChat = async (cid) => {
-    const res = await api(`/global-chats/${cid}?user_id=${USER_ID}`);
-    if (res.ok) setGlobChat(await res.json());
-  };
-
   const loadFirstStudies = async () => {
-    setFirstLoading(true);
-    const res = await api('/studies/first?limit=20');
+    const res = await apiFetch('/studies/first?limit=20');
     if (res.ok) { const d = await res.json(); setFirstStudies(d.results || []); }
-    setFirstLoading(false);
   };
 
-  // ─── project actions ────────────────────────────────────────────
+  // Load a single chat into cache (only if not already present)
+  const hydrateChatCache = async (type, projId, chatId) => {
+    if (chatCache[chatId]) return;
+    const res = type === 'project-chat'
+      ? await apiFetch(`/projects/${projId}/chats/${chatId}?user_id=${USER_ID}`)
+      : await apiFetch(`/global-chats/${chatId}?user_id=${USER_ID}`);
+    if (res.ok) {
+      const d = await res.json();
+      setChatCache(prev => ({ ...prev, [chatId]: { messages: d.messages || [], title: d.title } }));
+    }
+  };
+
+  // ─── project actions ───────────────────────────────────────────────────────────
   const createProject = async () => {
     const name = newProjName.trim() || 'Untitled';
-    const res = await post('/projects', { user_id: USER_ID, name });
+    const res  = await apiPost('/projects', { user_id: USER_ID, name });
     if (!res.ok) return;
     const proj = await res.json();
     setNewProjName(''); setShowNewProj(false);
     await loadProjects();
-    setActiveProj(proj.project_id);
-    setMode('chat');
+    setOpenProjId(proj.project_id);
+    setProjInnerTab('chats');
   };
 
   const deleteProject = async (pid) => {
-    if (!confirm('Delete this project?')) return;
-    await del(`/projects/${pid}?user_id=${USER_ID}`);
-    if (activeProj === pid) { setActiveProj(''); setProject(null); }
+    if (!confirm('Delete this project and all its chats?')) return;
+    await apiDel(`/projects/${pid}?user_id=${USER_ID}`);
+    if (openProjId === pid) { setOpenProjId(null); setOpenProject(null); }
+    if (view.projId === pid) setView({ type: 'browse' });
     loadProjects();
   };
 
   const addStudyToProject = async (study) => {
-    if (!activeProj) return;
-    const res = await post(`/projects/${activeProj}/studies`, { user_id: USER_ID, study });
-    if (res.ok) loadProject(activeProj);
+    if (!openProjId) return;
+    const res = await apiPost(`/projects/${openProjId}/studies`, { user_id: USER_ID, study });
+    if (res.ok) fetchProjectDetail(openProjId);
   };
 
-  const removeStudyFromProject = async (studyId) => {
-    if (!activeProj) return;
-    await del(`/projects/${activeProj}/studies/${studyId}?user_id=${USER_ID}`);
-    loadProject(activeProj);
+  const removeStudy = async (studyId) => {
+    if (!openProjId) return;
+    await apiDel(`/projects/${openProjId}/studies/${studyId}?user_id=${USER_ID}`);
+    fetchProjectDetail(openProjId);
   };
 
-  // ─── chat actions ────────────────────────────────────────────────
-  const newProjectChat = async () => {
-    if (!activeProj) return;
-    const res = await post(`/projects/${activeProj}/chats`, { user_id: USER_ID });
+  // ─── chat navigation (no full re-render / no reload) ──────────────────────────
+  const openProjChat = async (projId, chatId) => {
+    await hydrateChatCache('project-chat', projId, chatId);
+    setView({ type: 'project-chat', projId, chatId });
+    setCompErr('');
+  };
+
+  const openGlobChat = async (chatId) => {
+    await hydrateChatCache('global-chat', null, chatId);
+    setView({ type: 'global-chat', chatId });
+    setCompErr('');
+  };
+
+  const newProjChat = async (projId) => {
+    const res = await apiPost(`/projects/${projId}/chats`, { user_id: USER_ID });
     if (!res.ok) return;
     const chat = await res.json();
-    setActiveProjChat(chat.chat_id);
-    setProjChat(chat);
-    setMode('chat');
-    loadProjChats(activeProj);
+    setChatCache(prev => ({ ...prev, [chat.chat_id]: { messages: [], title: 'New chat' } }));
+    setView({ type: 'project-chat', projId, chatId: chat.chat_id });
+    setCompErr('');
+    fetchProjectDetail(projId); // refresh sidebar chat list
   };
 
-  const deleteProjectChat = async (cid) => {
-    if (!activeProj) return;
-    await del(`/projects/${activeProj}/chats/${cid}?user_id=${USER_ID}`);
-    if (activeProjChat === cid) { setActiveProjChat(''); setProjChat(null); }
-    loadProjChats(activeProj);
+  const deleteProjChat = async (projId, chatId) => {
+    await apiDel(`/projects/${projId}/chats/${chatId}?user_id=${USER_ID}`);
+    setChatCache(prev => { const n = { ...prev }; delete n[chatId]; return n; });
+    if (view.chatId === chatId) setView({ type: 'project-chat', projId, chatId: null });
+    fetchProjectDetail(projId);
   };
 
-  const newGlobalChat = async () => {
-    const res = await post('/global-chats', { user_id: USER_ID });
+  const newGlobChat = async () => {
+    const res = await apiPost('/global-chats', { user_id: USER_ID });
     if (!res.ok) return;
     const chat = await res.json();
-    setActiveGlobChat(chat.chat_id);
-    setGlobChat(chat);
-    setActiveProj('');
-    setMode('chat');
+    setChatCache(prev => ({ ...prev, [chat.chat_id]: { messages: [], title: 'New chat' } }));
+    setView({ type: 'global-chat', chatId: chat.chat_id });
+    setCompErr('');
     loadGlobalChats();
   };
 
-  const deleteGlobalChat = async (cid) => {
-    await del(`/global-chats/${cid}?user_id=${USER_ID}`);
-    if (activeGlobChat === cid) { setActiveGlobChat(''); setGlobChat(null); }
+  const deleteGlobChat = async (chatId) => {
+    await apiDel(`/global-chats/${chatId}?user_id=${USER_ID}`);
+    setChatCache(prev => { const n = { ...prev }; delete n[chatId]; return n; });
+    if (view.chatId === chatId) setView({ type: 'global-chat', chatId: null });
     loadGlobalChats();
   };
 
-  // ─── ensure chat exists ─────────────────────────────────────────
-  const ensureProjChat = async () => {
-    if (activeProjChat) return activeProjChat;
-    const res = await post(`/projects/${activeProj}/chats`, { user_id: USER_ID });
-    if (!res.ok) throw new Error('Failed to create chat');
-    const chat = await res.json();
-    setActiveProjChat(chat.chat_id);
-    setProjChat(chat);
-    loadProjChats(activeProj);
-    return chat.chat_id;
-  };
-
-  const ensureGlobChat = async () => {
-    if (activeGlobChat) return activeGlobChat;
-    const res = await post('/global-chats', { user_id: USER_ID });
-    if (!res.ok) throw new Error('Failed to create chat');
-    const chat = await res.json();
-    setActiveGlobChat(chat.chat_id);
-    setGlobChat(chat);
-    loadGlobalChats();
-    return chat.chat_id;
-  };
-
-  // ─── streaming helpers ──────────────────────────────────────────
-  const appendOptimistic = (setter, userMsg) => {
-    setter(prev => {
-      const msgs = [...(prev?.messages || []),
-        { role: 'user', content: userMsg },
-        { role: 'assistant', content: '', isStreaming: true }
-      ];
-      return { ...(prev || {}), messages: msgs };
+  // ─── streaming (mutates cache in-place, never touches view) ───────────────────
+  const patchLast = (chatId, fn) =>
+    setChatCache(prev => {
+      const c = prev[chatId];
+      if (!c) return prev;
+      const msgs = [...c.messages];
+      msgs[msgs.length - 1] = fn(msgs[msgs.length - 1]);
+      return { ...prev, [chatId]: { ...c, messages: msgs } };
     });
-  };
 
-  const appendToken = (setter, token) => {
-    setter(prev => {
-      if (!prev) return prev;
-      const msgs = [...prev.messages];
-      const last = { ...msgs[msgs.length - 1], content: (msgs[msgs.length - 1].content || '') + token };
-      msgs[msgs.length - 1] = last;
-      return { ...prev, messages: msgs };
+  const optimisticAppend = (chatId, userMsg) =>
+    setChatCache(prev => {
+      const c = prev[chatId] || { messages: [], title: userMsg.slice(0, 60) };
+      return {
+        ...prev,
+        [chatId]: {
+          ...c,
+          messages: [
+            ...c.messages,
+            { role: 'user',      content: userMsg },
+            { role: 'assistant', content: '', isStreaming: true },
+          ],
+        },
+      };
     });
-  };
 
-  const finalizeStream = (setter) => {
-    setter(prev => {
-      if (!prev) return prev;
-      const msgs = prev.messages.map((m, i) =>
-        i === prev.messages.length - 1 ? { ...m, isStreaming: false } : m
-      );
-      return { ...prev, messages: msgs };
-    });
-  };
-
-  // ─── send message ───────────────────────────────────────────────
+  // ─── send ──────────────────────────────────────────────────────────────────────
   const sendMessage = async () => {
     const msg = input.trim();
     if (!msg || sending) return;
@@ -302,41 +266,49 @@ function App() {
     abortRef.current = ctrl;
 
     try {
-      if (activeProj) {
-        // Project chat
-        const cid = await ensureProjChat();
-        appendOptimistic(setProjChat, msg);
-
-        const res = await fetch(`${API}/projects/${activeProj}/chats/${cid}/message/stream`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ user_id: USER_ID, message: msg }),
-          signal: ctrl.signal,
+      if (view.type === 'project-chat') {
+        let { projId, chatId } = view;
+        // create chat lazily if needed
+        if (!chatId) {
+          const res = await apiPost(`/projects/${projId}/chats`, { user_id: USER_ID });
+          if (!res.ok) throw new Error('Failed to create chat');
+          const chat = await res.json();
+          chatId = chat.chat_id;
+          setChatCache(prev => ({ ...prev, [chatId]: { messages: [], title: msg.slice(0, 60) } }));
+          setView(v => ({ ...v, chatId }));
+        }
+        optimisticAppend(chatId, msg);
+        const res = await fetch(`${API}/projects/${projId}/chats/${chatId}/message/stream`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_id: USER_ID, message: msg }), signal: ctrl.signal,
         });
         if (!res.ok || !res.body) throw new Error('Stream failed');
-
         await parseSSE(res, {
-          onToken: ({ token }) => appendToken(setProjChat, token || ''),
-          onDone:  ()          => { finalizeStream(setProjChat); loadProjChat(activeProj, cid); loadProjChats(activeProj); },
+          onToken: ({ token }) => patchLast(chatId, m => ({ ...m, content: (m.content||'') + (token||'') })),
+          onDone:  ()          => { patchLast(chatId, m => ({ ...m, isStreaming: false })); fetchProjectDetail(projId); },
           onError: ({ error }) => setCompErr(error || 'Error'),
         }, ctrl.signal);
 
-      } else {
-        // Global chat
-        const cid = await ensureGlobChat();
-        appendOptimistic(setGlobChat, msg);
-
-        const res = await fetch(`${API}/global-chats/${cid}/message/stream`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+      } else if (view.type === 'global-chat') {
+        let { chatId } = view;
+        if (!chatId) {
+          const res = await apiPost('/global-chats', { user_id: USER_ID });
+          if (!res.ok) throw new Error('Failed to create chat');
+          const chat = await res.json();
+          chatId = chat.chat_id;
+          setChatCache(prev => ({ ...prev, [chatId]: { messages: [], title: msg.slice(0, 60) } }));
+          setView(v => ({ ...v, chatId }));
+        }
+        optimisticAppend(chatId, msg);
+        const res = await fetch(`${API}/global-chats/${chatId}/message/stream`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ user_id: USER_ID, message: msg, selected_studies: ctxStudies }),
           signal: ctrl.signal,
         });
         if (!res.ok || !res.body) throw new Error('Stream failed');
-
         await parseSSE(res, {
-          onToken: ({ token }) => appendToken(setGlobChat, token || ''),
-          onDone:  ()          => { finalizeStream(setGlobChat); loadGlobChat(cid); loadGlobalChats(); },
+          onToken: ({ token }) => patchLast(chatId, m => ({ ...m, content: (m.content||'') + (token||'') })),
+          onDone:  ()          => { patchLast(chatId, m => ({ ...m, isStreaming: false })); loadGlobalChats(); },
           onError: ({ error }) => setCompErr(error || 'Error'),
         }, ctrl.signal);
       }
@@ -347,307 +319,269 @@ function App() {
     }
   };
 
-  // ─── search ─────────────────────────────────────────────────────
-  const doSearch = async () => {
-    if (!query.trim()) return;
+  // ─── search ───────────────────────────────────────────────────────────────────
+  const doSearch = async (override) => {
+    const q = (override ?? query).trim();
+    if (!q) return;
+    if (override) setQuery(override);
     setSearching(true); setSearched(false);
-    const res = await post('/search', { query });
-    if (res.ok) {
-      const d = await res.json();
-      setResults(d.results || []);
-      setSqlQuery(d.sql_query || null);
-    } else {
-      setResults([]);
-    }
+    const res = await apiPost('/search', { query: q });
+    if (res.ok) { const d = await res.json(); setResults(d.results || []); setSqlQuery(d.sql_query || null); }
+    else setResults([]);
     setSearched(true); setSearching(false);
   };
 
-  // ─── derived ────────────────────────────────────────────────────
-  const projStudyIds = useMemo(() => (project?.studies || []).map(s => s.study_id), [project]);
+  // ─── derived ──────────────────────────────────────────────────────────────────
+  const projStudyIds = useMemo(() => (openProject?.studies || []).map(s => s.study_id), [openProject]);
   const ctxStudyIds  = useMemo(() => ctxStudies.map(s => s.study_id), [ctxStudies]);
-
-  const isProjectMode = !!activeProj;
   const displayStudies = searched ? results : firstStudies;
-  const displayLabel   = searched ? `${results.length} results` : 'First 20 studies';
+  const isChat  = view.type === 'project-chat' || view.type === 'global-chat';
+  const canSend = isChat && input.trim().length > 0 && !sending;
 
-  const chatMessages = mode === 'chat'
-    ? (isProjectMode ? projChat?.messages || [] : globChat?.messages || [])
-    : [];
-
-  const chatIsEmpty = chatMessages.length === 0;
-
-  // ─── topbar title ────────────────────────────────────────────────
   const topTitle = () => {
-    if (mode === 'browse') return 'Browse Studies';
-    if (isProjectMode && project) return project.name;
-    return 'Global Chat';
+    if (view.type === 'project-chat') {
+      const proj = projects.find(p => p.project_id === view.projId);
+      return chatCache[view.chatId]?.title || proj?.name || 'Project Chat';
+    }
+    if (view.type === 'global-chat') return chatCache[view.chatId]?.title || 'Global Chat';
+    return 'Browse Studies';
   };
 
-  // ─── render ─────────────────────────────────────────────────────
+  // ─── render ───────────────────────────────────────────────────────────────────
   return (
     <div className="app">
-      {/* ── SIDEBAR ── */}
+
+      {/* ══════════════════ SIDEBAR ══════════════════ */}
       <aside className="sidebar">
         <div className="sidebar-header">
-          <div className="sidebar-logo">Qiita <span>Explorer</span></div>
-          <button
-            className="new-chat-btn"
-            title="New chat"
-            onClick={() => isProjectMode ? newProjectChat() : newGlobalChat()}
-          >
-            ✏
-          </button>
-        </div>
-
-        <div className="sidebar-nav">
-          <button
-            className={`sidebar-nav-btn ${sidebarTab === 'projects' ? 'active' : ''}`}
-            onClick={() => setSidebarTab('projects')}
-          >Projects</button>
-          <button
-            className={`sidebar-nav-btn ${sidebarTab === 'chats' ? 'active' : ''}`}
-            onClick={() => setSidebarTab('chats')}
-          >Chats</button>
+          <div className="app-logo">Qiita<span>Explorer</span></div>
         </div>
 
         <div className="sidebar-body">
-          {sidebarTab === 'projects' && (
-            <>
-              <div className="sidebar-section-label">Your Projects</div>
 
-              {projects.map(p => (
-                <button
-                  key={p.project_id}
-                  className={`sidebar-item ${activeProj === p.project_id ? 'active' : ''}`}
-                  onClick={() => { setActiveProj(p.project_id); setSidebarTab('chats'); setMode('chat'); }}
-                >
-                  <span className="sidebar-item-label">{p.name}</span>
-                  <span className="sidebar-item-meta">{p.studies_count || 0} studies</span>
-                  <button
-                    className="sidebar-item-del"
-                    onClick={e => { e.stopPropagation(); deleteProject(p.project_id); }}
-                    title="Delete project"
-                  >×</button>
-                </button>
-              ))}
+          {/* Projects */}
+          <div className="sb-label">Projects</div>
+          {projLoading && <div className="sb-loading">Loading…</div>}
 
-              {!showNewProj ? (
-                <button className="sidebar-new-btn" onClick={() => setShowNewProj(true)}>
-                  + New Project
-                </button>
-              ) : (
-                <div className="new-project-row">
-                  <input
-                    className="new-project-input"
-                    placeholder="Project name"
-                    value={newProjName}
-                    onChange={e => setNewProjName(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && createProject()}
-                    autoFocus
-                  />
-                  <div className="new-project-actions">
-                    <button className="btn-mini btn-mini-primary" onClick={createProject}>Create</button>
-                    <button className="btn-mini btn-mini-ghost" onClick={() => { setShowNewProj(false); setNewProjName(''); }}>Cancel</button>
+          {projects.map(p => (
+            <div key={p.project_id}>
+              {/* Folder row */}
+              <div
+                className={`folder-row ${openProjId === p.project_id ? 'open' : ''} ${view.projId === p.project_id ? 'viewing' : ''}`}
+                onClick={() => {
+                  if (openProjId === p.project_id) setOpenProjId(null);
+                  else { setOpenProjId(p.project_id); setProjInnerTab('chats'); }
+                }}
+              >
+                <span className="folder-caret">{openProjId === p.project_id ? '▾' : '▸'}</span>
+                <span className="folder-icon-svg">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>
+                  </svg>
+                </span>
+                <span className="folder-name">{p.name}</span>
+                <button className="folder-del" title="Delete" onClick={e => { e.stopPropagation(); deleteProject(p.project_id); }}>×</button>
+              </div>
+
+              {/* Expanded folder */}
+              {openProjId === p.project_id && (
+                <div className="folder-expanded">
+                  {/* New chat input */}
+                  <button className="folder-new-chat-btn" onClick={() => newProjChat(p.project_id)}>
+                    <span className="fnc-plus">+</span>
+                    <span className="fnc-text">New chat in {p.name}</span>
+                  </button>
+
+                  {/* Chats / Sources tabs */}
+                  <div className="inner-tabs">
+                    <button className={`inner-tab ${projInnerTab === 'chats' ? 'active' : ''}`} onClick={() => setProjInnerTab('chats')}>Chats</button>
+                    <button className={`inner-tab ${projInnerTab === 'sources' ? 'active' : ''}`} onClick={() => setProjInnerTab('sources')}>Sources</button>
                   </div>
+
+                  {/* Chats */}
+                  {projInnerTab === 'chats' && (openProject?.chats || []).length === 0 && (
+                    <div className="folder-empty">No chats yet.</div>
+                  )}
+                  {projInnerTab === 'chats' && (openProject?.chats || []).map(c => (
+                    <div
+                      key={c.chat_id}
+                      className={`chat-row ${view.chatId === c.chat_id ? 'active' : ''}`}
+                      onClick={() => openProjChat(p.project_id, c.chat_id)}
+                    >
+                      <div className="cr-content">
+                        <div className="cr-title">{chatCache[c.chat_id]?.title || c.title || 'New chat'}</div>
+                        {c.updated_at && (
+                          <div className="cr-date">
+                            {new Date(c.updated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                          </div>
+                        )}
+                      </div>
+                      <button className="cr-del" onClick={e => { e.stopPropagation(); deleteProjChat(p.project_id, c.chat_id); }}>×</button>
+                    </div>
+                  ))}
+
+                  {/* Sources */}
+                  {projInnerTab === 'sources' && (openProject?.studies || []).length === 0 && (
+                    <div className="folder-empty">No studies yet. Use Browse to add some.</div>
+                  )}
+                  {projInnerTab === 'sources' && (openProject?.studies || []).map(s => (
+                    <div key={s.study_id} className="chat-row" onClick={() => setModalStudy(s)}>
+                      <div className="cr-content">
+                        <div className="cr-title">{s.study_title || 'Untitled'}</div>
+                        <div className="cr-date">ID {s.study_id}</div>
+                      </div>
+                      <button className="cr-del" onClick={e => { e.stopPropagation(); removeStudy(s.study_id); }}>×</button>
+                    </div>
+                  ))}
                 </div>
               )}
+            </div>
+          ))}
 
-              {/* Studies in active project */}
-              {activeProj && project?.studies?.length > 0 && (
-                <>
-                  <div className="sidebar-section-label" style={{ marginTop: 16 }}>
-                    Sources · {project.name}
+          {/* New project form */}
+          {!showNewProj ? (
+            <button className="new-proj-btn" onClick={() => setShowNewProj(true)}>+ New Project</button>
+          ) : (
+            <div className="new-proj-form">
+              <input
+                className="new-proj-input"
+                placeholder="Project name…"
+                value={newProjName}
+                onChange={e => setNewProjName(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') createProject(); if (e.key === 'Escape') { setShowNewProj(false); setNewProjName(''); } }}
+                autoFocus
+              />
+              <div className="new-proj-actions">
+                <button className="npb-create" onClick={createProject}>Create</button>
+                <button className="npb-cancel" onClick={() => { setShowNewProj(false); setNewProjName(''); }}>Cancel</button>
+              </div>
+            </div>
+          )}
+
+          {/* Global Chats */}
+          <div className="sb-label" style={{ marginTop: 24 }}>Global Chats</div>
+          <button className="new-proj-btn" onClick={newGlobChat}>+ New Global Chat</button>
+          {globalChats.map(c => (
+            <div
+              key={c.chat_id}
+              className={`chat-row flat ${view.type === 'global-chat' && view.chatId === c.chat_id ? 'active' : ''}`}
+              onClick={() => openGlobChat(c.chat_id)}
+            >
+              <div className="cr-content">
+                <div className="cr-title">{chatCache[c.chat_id]?.title || c.title || 'New chat'}</div>
+                {c.updated_at && (
+                  <div className="cr-date">
+                    {new Date(c.updated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                   </div>
-                  {(project.studies || []).map(s => (
-                    <button
-                      key={s.study_id}
-                      className="sidebar-item"
-                      onClick={() => setModalStudy(s)}
-                    >
-                      <span className="sidebar-item-label">{s.study_title || 'Untitled'}</span>
-                      <span className="sidebar-item-meta">ID {s.study_id}</span>
-                      <button
-                        className="sidebar-item-del"
-                        onClick={e => { e.stopPropagation(); removeStudyFromProject(s.study_id); }}
-                        title="Remove from project"
-                      >×</button>
-                    </button>
-                  ))}
-                </>
-              )}
-            </>
-          )}
+                )}
+              </div>
+              <button className="cr-del" onClick={e => { e.stopPropagation(); deleteGlobChat(c.chat_id); }}>×</button>
+            </div>
+          ))}
+        </div>
 
-          {sidebarTab === 'chats' && (
-            <>
-              {activeProj && (
-                <>
-                  <div className="sidebar-section-label">Project Chats · {project?.name || '…'}</div>
-                  {projChats.map(c => (
-                    <button
-                      key={c.chat_id}
-                      className={`sidebar-item ${activeProjChat === c.chat_id ? 'active' : ''}`}
-                      onClick={() => { setActiveProjChat(c.chat_id); setMode('chat'); }}
-                    >
-                      <span className="sidebar-item-label">{c.title || 'New chat'}</span>
-                      <button
-                        className="sidebar-item-del"
-                        onClick={e => { e.stopPropagation(); deleteProjectChat(c.chat_id); }}
-                        title="Delete chat"
-                      >×</button>
-                    </button>
-                  ))}
-                  <button className="sidebar-new-btn" onClick={newProjectChat}>+ New Project Chat</button>
-                </>
-              )}
-
-              <div className="sidebar-section-label" style={{ marginTop: activeProj ? 16 : 0 }}>Global Chats</div>
-              {globalChats.map(c => (
-                <button
-                  key={c.chat_id}
-                  className={`sidebar-item ${!activeProj && activeGlobChat === c.chat_id ? 'active' : ''}`}
-                  onClick={() => { setActiveProj(''); setActiveGlobChat(c.chat_id); setMode('chat'); }}
-                >
-                  <span className="sidebar-item-label">{c.title || 'New chat'}</span>
-                  <button
-                    className="sidebar-item-del"
-                    onClick={e => { e.stopPropagation(); deleteGlobalChat(c.chat_id); }}
-                    title="Delete chat"
-                  >×</button>
-                </button>
-              ))}
-              <button className="sidebar-new-btn" onClick={newGlobalChat}>+ New Global Chat</button>
-            </>
-          )}
+        {/* Browse pinned bottom */}
+        <div className="sidebar-footer">
+          <button
+            className={`browse-btn ${view.type === 'browse' ? 'active' : ''}`}
+            onClick={() => setView({ type: 'browse' })}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{marginRight:6}}>
+              <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+            Browse Studies
+          </button>
         </div>
       </aside>
 
-      {/* ── MAIN ── */}
+      {/* ══════════════════ MAIN ══════════════════════ */}
       <div className="main">
-        {/* Top bar */}
+
+        {/* Topbar */}
         <div className="topbar">
           <span className="topbar-title">{topTitle()}</span>
-          {isProjectMode && mode === 'chat' && project?.studies?.length > 0 && (
-            <span className="topbar-badge">{project.studies.length} sources</span>
+          {view.type === 'project-chat' && openProject?.studies?.length > 0 && (
+            <span className="topbar-badge">{openProject.studies.length} sources</span>
           )}
-          <div className="topbar-spacer" />
-          <div className="mode-toggle">
-            <button
-              className={`mode-toggle-btn ${mode === 'browse' ? 'active' : ''}`}
-              onClick={() => setMode('browse')}
-            >Browse</button>
-            <button
-              className={`mode-toggle-btn ${mode === 'chat' ? 'active' : ''}`}
-              onClick={() => setMode('chat')}
-            >Chat</button>
-          </div>
         </div>
 
-        {/* Content */}
+        {/* Content area */}
         <div className="content">
-          {/* ── BROWSE MODE ── */}
-          {mode === 'browse' && (
+
+          {/* ── BROWSE ── */}
+          {view.type === 'browse' && (
             <div className="browse-panel">
-              {/* search bar */}
-              <div className="browse-search-box">
+              <div className="browse-search-row">
                 <input
-                  className="browse-search-input"
+                  className="browse-input"
                   placeholder="Search by keyword, author, or topic…"
                   value={query}
                   onChange={e => setQuery(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && doSearch()}
                 />
-                <button className="btn-primary" onClick={doSearch} disabled={searching || !query.trim()}>
+                <button className="btn-search" onClick={() => doSearch()} disabled={searching || !query.trim()}>
                   {searching ? '…' : 'Search'}
                 </button>
                 {searched && (
-                  <button className="btn-ghost" onClick={() => { setQuery(''); setResults([]); setSearched(false); setSqlQuery(null); }}>
+                  <button className="btn-clear" onClick={() => { setQuery(''); setResults([]); setSearched(false); setSqlQuery(null); }}>
                     Clear
                   </button>
                 )}
               </div>
 
-              {/* quick filters */}
               <div className="browse-chips">
                 {['soil microbiome','gut bacteria','ocean samples','Rob Knight','UC San Diego','16S rRNA'].map(q => (
-                  <button key={q} className="browse-chip" onClick={() => { setQuery(q); setTimeout(doSearch, 50); }}>
-                    {q}
-                  </button>
+                  <button key={q} className="browse-chip" onClick={() => doSearch(q)}>{q}</button>
                 ))}
               </div>
 
-              {/* selected context chips (global chat) */}
-              {!isProjectMode && ctxStudies.length > 0 && (
-                <div>
-                  <div className="project-section-title">Chat Context</div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                    {ctxStudies.map(s => (
-                      <button
-                        key={s.study_id}
-                        className="source-chip removable"
-                        onClick={() => setCtxStudies(prev => prev.filter(x => x.study_id !== s.study_id))}
-                      >
-                        ID {s.study_id} · {(s.study_title || 'Untitled').slice(0, 30)}
-                      </button>
-                    ))}
-                  </div>
+              {/* Global ctx chips */}
+              {!openProjId && ctxStudies.length > 0 && (
+                <div className="ctx-bar">
+                  <span className="ctx-label">Chat context</span>
+                  {ctxStudies.map(s => (
+                    <button key={s.study_id} className="ctx-chip"
+                      onClick={() => setCtxStudies(prev => prev.filter(x => x.study_id !== s.study_id))}>
+                      {(s.study_title||'Untitled').slice(0,32)} ×
+                    </button>
+                  ))}
                 </div>
               )}
 
-              {/* sql */}
               {sqlQuery && (
                 <>
                   <label className="sql-toggle">
                     <input type="checkbox" checked={showSql} onChange={e => setShowSql(e.target.checked)} />
                     Show generated SQL
                   </label>
-                  {showSql && (
-                    <div className="sql-block">WHERE {sqlQuery.where_clause}<br />params: {JSON.stringify(sqlQuery.params)}</div>
-                  )}
+                  {showSql && <div className="sql-block">WHERE {sqlQuery.where_clause}</div>}
                 </>
               )}
 
-              {/* results */}
-              {searching && (
-                <div className="state-loading">
-                  <div className="spinner" /><br />Searching…
-                </div>
-              )}
+              {searching && <div className="state-loading"><div className="spinner" /><br />Searching…</div>}
 
               {!searching && (
                 <>
-                  <div style={{ fontSize: 12, color: 'var(--text-faint)' }}>{displayLabel}</div>
-                  {displayStudies.length === 0 && searched && (
-                    <div className="state-empty">No studies matched your search.</div>
-                  )}
+                  <div className="browse-count">{searched ? `${results.length} results` : 'First 20 studies'}</div>
+                  {searched && results.length === 0 && <div className="state-empty">No studies matched your search.</div>}
                   <div className="studies-grid">
                     {displayStudies.map(study => {
-                      const inProj     = projStudyIds.includes(study.study_id);
-                      const inCtx      = ctxStudyIds.includes(study.study_id);
+                      const inProj = projStudyIds.includes(study.study_id);
+                      const inCtx  = ctxStudyIds.includes(study.study_id);
                       return (
                         <div key={study.study_id} className="study-card" onClick={() => setModalStudy(study)}>
-                          <div className="study-card-header">
-                            <span className="study-id">ID {study.study_id}</span>
+                          <div className="study-card-top">
+                            <span className="study-id-badge">ID {study.study_id}</span>
                             <div className="study-card-actions" onClick={e => e.stopPropagation()}>
-                              {/* global: add to context */}
-                              {!isProjectMode && (
-                                <button
-                                  className={`btn-card btn-card-ghost ${inCtx ? 'selected' : ''}`}
-                                  onClick={() => setCtxStudies(prev =>
-                                    inCtx ? prev.filter(s => s.study_id !== study.study_id) : [...prev, study]
-                                  )}
-                                >
-                                  {inCtx ? '✓ Context' : '+ Context'}
+                              {openProjId ? (
+                                <button className="btn-card-add" disabled={inProj} onClick={() => addStudyToProject(study)}>
+                                  {inProj ? '✓ Saved' : '+ Add to Project'}
                                 </button>
-                              )}
-                              {/* project: add to project */}
-                              {isProjectMode && (
-                                <button
-                                  className="btn-card btn-card-primary"
-                                  disabled={inProj}
-                                  onClick={() => addStudyToProject(study)}
-                                >
-                                  {inProj ? 'Saved' : '+ Project'}
+                              ) : (
+                                <button className={`btn-card-ctx ${inCtx ? 'on' : ''}`}
+                                  onClick={() => setCtxStudies(prev =>
+                                    inCtx ? prev.filter(s => s.study_id !== study.study_id) : [...prev, study])}>
+                                  {inCtx ? '✓ Context' : '+ Context'}
                                 </button>
                               )}
                             </div>
@@ -668,65 +602,55 @@ function App() {
             </div>
           )}
 
-          {/* ── CHAT MODE ── */}
-          {mode === 'chat' && (
+          {/* ── CHAT ── */}
+          {isChat && (
             <>
-              {/* Sources bar for project chat */}
-              {isProjectMode && project?.studies?.length > 0 && (
+              {/* Sources bar */}
+              {view.type === 'project-chat' && openProject?.studies?.length > 0 && (
                 <div className="sources-bar">
-                  <div className="sources-bar-inner">
-                    <span className="sources-label">Sources</span>
-                    {(project.studies || []).map(s => (
-                      <button key={s.study_id} className="source-chip" onClick={() => setModalStudy(s)}>
-                        {(s.study_title || 'Untitled').slice(0, 40)}
-                      </button>
-                    ))}
-                  </div>
+                  <span className="sources-label">Sources</span>
+                  {(openProject.studies||[]).map(s => (
+                    <button key={s.study_id} className="src-chip" onClick={() => setModalStudy(s)}>
+                      {(s.study_title||'Untitled').slice(0,40)}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {view.type === 'global-chat' && ctxStudies.length > 0 && (
+                <div className="sources-bar">
+                  <span className="sources-label">Context</span>
+                  {ctxStudies.map(s => (
+                    <button key={s.study_id} className="src-chip removable"
+                      onClick={() => setCtxStudies(prev => prev.filter(x => x.study_id !== s.study_id))}>
+                      {(s.study_title||'Untitled').slice(0,40)} ×
+                    </button>
+                  ))}
                 </div>
               )}
 
-              {/* Sources bar for global chat */}
-              {!isProjectMode && ctxStudies.length > 0 && (
-                <div className="sources-bar">
-                  <div className="sources-bar-inner">
-                    <span className="sources-label">Context</span>
-                    {ctxStudies.map(s => (
-                      <button
-                        key={s.study_id}
-                        className="source-chip removable"
-                        onClick={() => setCtxStudies(prev => prev.filter(x => x.study_id !== s.study_id))}
-                      >
-                        {(s.study_title || 'Untitled').slice(0, 40)}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
+              {/* Messages */}
               <div className="chat-messages">
-                {chatIsEmpty ? (
+                {activeMsgs.length === 0 ? (
                   <div className="chat-empty">
                     <div className="chat-empty-title">
-                      {isProjectMode ? `Chat with ${project?.name || 'Project'}` : 'Global Chat'}
+                      {view.type === 'project-chat'
+                        ? `Chat with ${projects.find(p => p.project_id === view.projId)?.name || 'Project'}`
+                        : 'Global Chat'}
                     </div>
                     <p className="chat-empty-sub">
-                      {isProjectMode
-                        ? `Ask anything about your ${project?.studies?.length || 0} saved studies, or explore microbiome concepts.`
-                        : 'Search and add studies as context in Browse mode, then ask questions about them here.'}
+                      {view.type === 'project-chat'
+                        ? `Ask anything about your ${openProject?.studies?.length || 0} saved studies.`
+                        : 'Add studies as context from Browse, then ask questions here.'}
                     </p>
                     <div className="chat-empty-chips">
-                      {['What are the key themes across my studies?',
-                        'Summarize the study abstracts',
-                        'Who are the principal investigators?',
-                        'What sample types were used?'].map(q => (
-                        <button key={q} className="chat-empty-chip" onClick={() => { setInput(q); taRef.current?.focus(); }}>
-                          {q}
-                        </button>
-                      ))}
+                      {['What are the key themes?','Who are the PIs?','Summarize the abstracts','What sample types were used?']
+                        .map(q => (
+                          <button key={q} className="chat-starter" onClick={() => { setInput(q); taRef.current?.focus(); }}>{q}</button>
+                        ))}
                     </div>
                   </div>
                 ) : (
-                  chatMessages.map((m, i) => (
+                  activeMsgs.map((m, i) => (
                     <div key={i} className={`msg-row ${m.role}`}>
                       <div className="msg-bubble">
                         {m.content}
@@ -739,46 +663,45 @@ function App() {
               </div>
             </>
           )}
+
+          {/* No chat selected placeholder */}
+          {view.type === 'project-chat' && !view.chatId && !isChat && (
+            <div className="chat-empty" style={{paddingTop:60}}>
+              <div className="chat-empty-title">Select a chat</div>
+              <p className="chat-empty-sub">Pick a chat from the sidebar or start a new one.</p>
+            </div>
+          )}
         </div>
 
-        {/* ── COMPOSER ── */}
+        {/* Composer */}
         <div className="composer-wrap">
-          <div className="composer">
+          <div className={`composer ${!isChat ? 'muted' : ''}`}>
             <textarea
               ref={taRef}
-              className="composer-textarea"
+              className="composer-ta"
               rows={1}
-              placeholder={mode === 'browse' ? 'Switch to Chat to send a message…' : 'Message…'}
+              placeholder={isChat ? 'Message…' : 'Open a chat to start messaging'}
               value={input}
               onChange={e => setInput(e.target.value)}
-              onKeyDown={e => {
-                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (mode === 'chat') sendMessage(); }
-              }}
-              disabled={sending || mode === 'browse'}
+              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && isChat) { e.preventDefault(); sendMessage(); } }}
+              disabled={!isChat || sending}
             />
-            <button
-              className="composer-send"
-              onClick={() => { if (mode !== 'chat') setMode('chat'); else sendMessage(); }}
-              disabled={sending || (mode === 'chat' && !input.trim())}
-            >
-              ↑
-            </button>
+            <button className="composer-send" onClick={sendMessage} disabled={!canSend}>↑</button>
           </div>
           {compErr && <div className="composer-error">{compErr}</div>}
         </div>
       </div>
 
-      {/* ── STUDY MODAL ── */}
+      {/* ══════════════════ MODAL ══════════════════════ */}
       {modalStudy && (
         <div className="modal-overlay" onClick={() => setModalStudy(null)}>
           <div className="modal-card" onClick={e => e.stopPropagation()}>
             <button className="modal-close" onClick={() => setModalStudy(null)}>×</button>
             <div className="modal-id">Study ID {modalStudy.study_id}</div>
             <div className="modal-title">{modalStudy.study_title || 'Untitled study'}</div>
-            <div className="modal-section">
-              <h4>Abstract</h4>
-              <p>{modalStudy.study_abstract || 'No abstract available.'}</p>
-            </div>
+            {modalStudy.study_abstract && (
+              <div className="modal-section"><h4>Abstract</h4><p>{modalStudy.study_abstract}</p></div>
+            )}
             {modalStudy.pi_name && (
               <div className="modal-section">
                 <h4>Principal Investigator</h4>
@@ -786,10 +709,7 @@ function App() {
               </div>
             )}
             {modalStudy.pi_email && (
-              <div className="modal-section">
-                <h4>Contact</h4>
-                <p>{modalStudy.pi_email}</p>
-              </div>
+              <div className="modal-section"><h4>Contact</h4><p>{modalStudy.pi_email}</p></div>
             )}
           </div>
         </div>
