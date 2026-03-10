@@ -6,6 +6,10 @@ from qiita_db.sql_connection import TRN
 import json
 from dotenv import load_dotenv
 import os
+from concurrent.futures import ThreadPoolExecutor
+
+from services.llm import llm_query_to_sql
+from services.study_service import search_studies_with_sql
 
 from store import (
     add_study_to_project,
@@ -21,13 +25,16 @@ from store import (
     get_global_chat,
     get_project,
     get_project_context_summary,
+    get_study_detail_cache,
     list_chats,
     list_global_chats,
     list_projects,
     remove_study_from_project,
     update_project,
+    update_project_study_data,
     upsert_project_context_summary,
     upsert_project_study_summary,
+    upsert_study_detail_cache,
 )
 
 load_dotenv()
@@ -92,6 +99,14 @@ def _truncate(value, limit):
     return text[: max(0, limit - 3)] + "..."
 
 
+_STUDY_BLOCK_SKIP_KEYS = {
+    "study_id", "study_title", "study_abstract", "pi_name", "pi_email",
+    "pi_affiliation", "lab_person_name", "summary_text", "added_at", "updated_at",
+    "study_alias", "metadata_complete", "data_types", "num_samples", "num_preps",
+    "preps_json",
+}
+
+
 def _study_detail_block(study: dict):
     sid = study.get("study_id")
     title = _truncate(study.get("study_title") or "Untitled study", 160)
@@ -101,9 +116,33 @@ def _study_detail_block(study: dict):
     pi_affiliation = _truncate(study.get("pi_affiliation") or "Not available", 200)
     lab_person_name = _truncate(study.get("lab_person_name") or "Not available", 140)
 
+    enriched_lines = []
+    data_types = (study.get("data_types") or "").strip()
+    num_samples = study.get("num_samples")
+    num_preps = study.get("num_preps")
+    preps_json = study.get("preps_json") or "[]"
+
+    if data_types:
+        enriched_lines.append(f"  Data Types: {data_types}")
+    if num_samples is not None:
+        enriched_lines.append(f"  Num Samples: {num_samples}")
+    if num_preps is not None:
+        enriched_lines.append(f"  Num Preps: {num_preps}")
+    if preps_json and preps_json != "[]":
+        try:
+            preps = json.loads(preps_json)
+            for p in preps[:5]:
+                prep_id = p.get("prep_template_id", "?")
+                dtype = p.get("data_type", "?")
+                inv_type = p.get("investigation_type") or "N/A"
+                status = p.get("preprocessing_status") or "N/A"
+                enriched_lines.append(f"    Prep {prep_id}: {dtype} | {inv_type} | {status}")
+        except Exception:
+            pass
+
     extra_lines = []
     for key, value in study.items():
-        if key in {"study_id", "study_title", "study_abstract", "pi_name", "pi_email", "pi_affiliation", "lab_person_name", "summary_text", "added_at", "updated_at"}:
+        if key in _STUDY_BLOCK_SKIP_KEYS:
             continue
         if value is None:
             continue
@@ -119,6 +158,7 @@ def _study_detail_block(study: dict):
         f"  PI Email: {pi_email}\n"
         f"  PI Affiliation: {pi_affiliation}\n"
         f"  Lab Contact: {lab_person_name}"
+        + (f"\n{chr(10).join(enriched_lines)}" if enriched_lines else "")
         + (f"\n{chr(10).join(extra_lines)}" if extra_lines else "")
     )
 
@@ -266,20 +306,14 @@ def _build_selected_studies_context(selected_studies):
         for key, value in s.items():
             if key in {"study_id", "study_title", "study_abstract", "pi_name", "pi_email", "pi_affiliation", "lab_person_name", "added_at"}:
                 continue
-            if value is None:
-                continue
-            val = str(value).strip()
+            val = _truncate(value, 180)
             if not val:
                 continue
-            if len(val) > 180:
-                val = val[:177] + "..."
             extra_lines.append(f"  {key}: {val}")
         if not sid:
             continue
-        if len(title) > 120:
-            title = title[:117] + "..."
-        if len(abstract) > 400:
-            abstract = abstract[:397] + "..."
+        title = _truncate(title, 120)
+        abstract = _truncate(abstract, 400)
         extra_text = "\n".join(extra_lines)
         lines.append(
             f"- ID {sid}: {title}\n"
@@ -299,39 +333,29 @@ def _build_selected_studies_context(selected_studies):
     )
 
 
-def llm_chat(messages, study_context_text: str):
-    system_content = CHAT_SYSTEM_PROMPT
+def _build_api_messages(messages, study_context_text: str):
     if study_context_text:
-        system_content = f"{system_content}\n\nSTUDY CONTEXT:\n{study_context_text}"
+        context_block = f"\n\nSTUDY CONTEXT:\n{study_context_text}"
     else:
-        system_content = (
-            f"{system_content}\n\nSTUDY CONTEXT:\n"
+        context_block = (
+            "\n\nSTUDY CONTEXT:\n"
             "No study records were provided for this request. Do not list specific studies."
         )
+    system_content = CHAT_SYSTEM_PROMPT + context_block
+    return [{"role": "system", "content": system_content}] + _normalize_messages(messages)
 
-    api_messages = [{"role": "system", "content": system_content}]
-    api_messages.extend(_normalize_messages(messages))
 
-    r = client.chat.completions.create(model="gemma3", messages=api_messages)
+def llm_chat(messages, study_context_text: str):
+    r = client.chat.completions.create(
+        model="gemma3", messages=_build_api_messages(messages, study_context_text)
+    )
     return (r.choices[0].message.content or "").strip()
 
 
 def llm_chat_stream(messages, study_context_text: str):
-    system_content = CHAT_SYSTEM_PROMPT
-    if study_context_text:
-        system_content = f"{system_content}\n\nSTUDY CONTEXT:\n{study_context_text}"
-    else:
-        system_content = (
-            f"{system_content}\n\nSTUDY CONTEXT:\n"
-            "No study records were provided for this request. Do not list specific studies."
-        )
-
-    api_messages = [{"role": "system", "content": system_content}]
-    api_messages.extend(_normalize_messages(messages))
-
     stream = client.chat.completions.create(
         model="gemma3",
-        messages=api_messages,
+        messages=_build_api_messages(messages, study_context_text),
         stream=True,
     )
     for chunk in stream:
@@ -341,47 +365,6 @@ def llm_chat_stream(messages, study_context_text: str):
         token = getattr(delta, "content", None)
         if token:
             yield token
-
-
-def search_studies_with_sql(custom_sql_where="", params=None):
-    if params is None:
-        params = []
-
-    with TRN:
-        sql = f"""
-        SELECT DISTINCT s.study_id, s.study_title, s.study_abstract,
-               sp_pi.name as pi_name, sp_pi.email as pi_email,
-               sp_pi.affiliation as pi_affiliation,
-               sp_lab.name as lab_person_name
-        FROM qiita.study s
-        LEFT JOIN qiita.study_person sp_pi
-            ON s.principal_investigator_id = sp_pi.study_person_id
-        LEFT JOIN qiita.study_person sp_lab
-            ON s.lab_person_id = sp_lab.study_person_id
-        LEFT JOIN qiita.study_artifact sa ON s.study_id = sa.study_id
-        LEFT JOIN qiita.artifact a ON sa.artifact_id = a.artifact_id
-        LEFT JOIN qiita.visibility v ON a.visibility_id = v.visibility_id
-        WHERE {custom_sql_where if custom_sql_where else '1=1'}
-        ORDER BY s.study_id
-        """
-        TRN.add(sql, params)
-        results = TRN.execute_fetchindex()
-
-    if not results:
-        return []
-
-    studies = []
-    for row in results:
-        studies.append({
-            "study_id": row[0],
-            "study_title": row[1],
-            "study_abstract": row[2],
-            "pi_name": row[3],
-            "pi_email": row[4],
-            "pi_affiliation": row[5],
-            "lab_person_name": row[6],
-        })
-    return studies
 
 
 def first_studies(limit=20):
@@ -395,9 +378,21 @@ def first_studies(limit=20):
     with TRN:
         sql = """
         SELECT DISTINCT s.study_id, s.study_title, s.study_abstract,
+               s.study_alias, s.metadata_complete,
                sp_pi.name as pi_name, sp_pi.email as pi_email,
                sp_pi.affiliation as pi_affiliation,
-               sp_lab.name as lab_person_name
+               sp_lab.name as lab_person_name,
+               (SELECT COUNT(*)
+                FROM qiita.study_sample ss
+                WHERE ss.study_id = s.study_id) AS num_samples,
+               (SELECT STRING_AGG(DISTINCT dt2.data_type, ', ')
+                FROM qiita.study_prep_template spt2
+                JOIN qiita.prep_template pt2 ON spt2.prep_template_id = pt2.prep_template_id
+                JOIN qiita.data_type dt2 ON pt2.data_type_id = dt2.data_type_id
+                WHERE spt2.study_id = s.study_id) AS data_types,
+               (SELECT COUNT(DISTINCT spt3.prep_template_id)
+                FROM qiita.study_prep_template spt3
+                WHERE spt3.study_id = s.study_id) AS num_preps
         FROM qiita.study s
         LEFT JOIN qiita.study_person sp_pi
             ON s.principal_investigator_id = sp_pi.study_person_id
@@ -418,83 +413,212 @@ def first_studies(limit=20):
             "study_id": row[0],
             "study_title": row[1],
             "study_abstract": row[2],
-            "pi_name": row[3],
-            "pi_email": row[4],
-            "pi_affiliation": row[5],
-            "lab_person_name": row[6],
+            "study_alias": row[3],
+            "metadata_complete": row[4],
+            "pi_name": row[5],
+            "pi_email": row[6],
+            "pi_affiliation": row[7],
+            "lab_person_name": row[8],
+            "num_samples": row[9],
+            "data_types": row[10],
+            "num_preps": row[11],
         })
     return studies
 
 
-def llm_query_to_sql(user_query):
-    system_prompt = """You are a SQL query generator for a microbiome study database (Qiita).
-
-        Available tables and columns:
-        - s.study_id (integer)
-        - s.study_title (text)
-        - s.study_abstract (text)
-        - sp_pi.name (text) - Principal Investigator name
-        - sp_pi.email (text) - PI email
-        - sp_pi.affiliation (text) - PI institution
-        - sp_lab.name (text) - Lab person name
-        - v.visibility (text) - Values: 'public', 'private', 'sandbox', 'awaiting_approval'
-
-        Your task:
-        1. Convert the user's natural language query into a PostgreSQL WHERE clause
-        2. Use ILIKE for case-insensitive text matching (e.g., field ILIKE '%keyword%')
-        3. Use parameterized queries with %s placeholders
-        4. Return ONLY a JSON object with 'where_clause' and 'params' fields
-
-        Examples:
-
-        User: "Find studies about soil microbiome"
-        Response: {
-        "where_clause": "(s.study_title ILIKE %s OR s.study_abstract ILIKE %s)",
-        "params": ["%soil%", "%soil%"]
-        }
-
-        User: "Studies by Rob Knight"
-        Response: {
-        "where_clause": "sp_pi.name ILIKE %s",
-        "params": ["%Rob Knight%"]
-        }
-
-        Return ONLY valid JSON, no other text."""
-
-    message = client.chat.completions.create(
-        model="gemma3",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_query}
-        ]
-    )
-
-    raw = message.choices[0].message.content
-    if raw is None:
-        raw = ""
-    response_text = (raw or "").strip()
-    if not response_text:
-        response_text = "{}"
-    if response_text.startswith("```"):
-        parts = response_text.split("```")
-        response_text = parts[1] if len(parts) > 1 else response_text
-        if response_text.startswith("json"):
-            response_text = response_text[4:]
-        response_text = response_text.strip()
+def _fetch_study_samples(study_id: int, limit: int = 200):
+    """Return sample list for a study using dynamic sample_{study_id} table."""
+    study_id = int(study_id)
+    total = 0
+    samples = []
+    try:
+        with TRN:
+            TRN.add(
+                "SELECT COUNT(*) FROM qiita.study_sample WHERE study_id = %s",
+                [study_id],
+            )
+            cnt = TRN.execute_fetchindex()
+        total = cnt[0][0] if cnt else 0
+    except Exception:
+        return [], 0
 
     try:
-        out = json.loads(response_text)
-        if not isinstance(out, dict) or "where_clause" not in out or "params" not in out:
-            raise ValueError("missing where_clause or params")
-        return out
-    except (json.JSONDecodeError, ValueError):
-        keywords = user_query.lower().replace("find", "").replace("studies", "").replace("about", "").strip()
-        if not keywords:
-            keywords = user_query.strip() or "%"
-        return {
-            "where_clause": "(s.study_title ILIKE %s OR s.study_abstract ILIKE %s)",
-            "params": [f"%{keywords}%", f"%{keywords}%"],
-        }
+        with TRN:
+            # Dynamic table — study_id is already cast to int so safe to interpolate
+            TRN.add(
+                f"""
+                SELECT ss.sample_id,
+                       sm.sample_values->>'anonymized_name'    AS anonymized_name,
+                       sm.sample_values->>'collection_timestamp' AS collection_timestamp,
+                       sm.sample_values->>'env_package'        AS env_package
+                FROM qiita.study_sample ss
+                JOIN qiita.sample_{study_id} sm ON ss.sample_id = sm.sample_id
+                WHERE ss.study_id = %s
+                ORDER BY ss.sample_id
+                LIMIT %s
+                """,
+                [study_id, limit],
+            )
+            rows = TRN.execute_fetchindex()
+        samples = [
+            {
+                "sample_id": r[0],
+                "anonymized_name": r[1],
+                "collection_timestamp": r[2],
+                "env_package": r[3],
+            }
+            for r in (rows or [])
+        ]
+    except Exception:
+        pass
+
+    return samples, total
+
+
+def _fetch_prep_metadata_summary(prep_template_id: int):
+    """Return one row of sequencing metadata for a prep template (platform, target_gene, etc.)."""
+    prep_template_id = int(prep_template_id)
+    try:
+        with TRN:
+            TRN.add(
+                f"""
+                SELECT pm.sample_values->>'platform'         AS platform,
+                       pm.sample_values->>'target_gene'      AS target_gene,
+                       pm.sample_values->>'instrument_model' AS instrument_model,
+                       pm.sample_values->>'target_subfragment' AS target_subfragment
+                FROM qiita.prep_template_sample pts
+                JOIN qiita.prep_{prep_template_id} pm ON pts.sample_id = pm.sample_id
+                WHERE pts.prep_template_id = %s
+                LIMIT 1
+                """,
+                [prep_template_id],
+            )
+            rows = TRN.execute_fetchindex()
+        if rows:
+            r = rows[0]
+            return {
+                "platform": r[0],
+                "target_gene": r[1],
+                "instrument_model": r[2],
+                "target_subfragment": r[3],
+            }
+    except Exception:
+        pass
+    return {}
+
+
+def _fetch_study_detail_from_qiita(study_id: int):
+    """Run prep.sql and artifacts.sql queries for a study and return (preps, artifacts)."""
+    preps = []
+    artifacts = []
+    try:
+        with TRN:
+            TRN.add(
+                """
+                SELECT pt.prep_template_id, pt.name AS prep_name,
+                       dt.data_type, pt.investigation_type,
+                       pt.preprocessing_status,
+                       pt.creation_timestamp, pt.modification_timestamp
+                FROM qiita.study_prep_template spt
+                JOIN qiita.prep_template pt ON spt.prep_template_id = pt.prep_template_id
+                JOIN qiita.data_type dt ON pt.data_type_id = dt.data_type_id
+                WHERE spt.study_id = %s
+                ORDER BY pt.prep_template_id
+                """,
+                [study_id],
+            )
+            rows = TRN.execute_fetchindex()
+        preps = [
+            {
+                "prep_template_id": r[0],
+                "prep_name": r[1],
+                "data_type": r[2],
+                "investigation_type": r[3],
+                "preprocessing_status": r[4],
+                "creation_timestamp": str(r[5]) if r[5] else None,
+                "modification_timestamp": str(r[6]) if r[6] else None,
+            }
+            for r in (rows or [])
+        ]
+    except Exception:
+        import traceback; traceback.print_exc()
+
+    try:
+        with TRN:
+            TRN.add(
+                """
+                SELECT pt.prep_template_id, pt.name AS prep_name,
+                       a.artifact_id, at.artifact_type, dt.data_type,
+                       dd.mountpoint || '/' || a.artifact_id || '/' || f.filepath AS full_path,
+                       a.generated_timestamp
+                FROM qiita.study_prep_template spt
+                JOIN qiita.prep_template pt ON spt.prep_template_id = pt.prep_template_id
+                JOIN qiita.data_type dt ON pt.data_type_id = dt.data_type_id
+                JOIN qiita.preparation_artifact pa ON pt.prep_template_id = pa.prep_template_id
+                JOIN qiita.artifact a ON pa.artifact_id = a.artifact_id
+                JOIN qiita.artifact_type at ON a.artifact_type_id = at.artifact_type_id
+                JOIN qiita.artifact_filepath af ON a.artifact_id = af.artifact_id
+                JOIN qiita.filepath f ON af.filepath_id = f.filepath_id
+                JOIN qiita.data_directory dd ON f.data_directory_id = dd.data_directory_id
+                WHERE spt.study_id = %s
+                ORDER BY pt.prep_template_id, a.artifact_id
+                """,
+                [study_id],
+            )
+            rows = TRN.execute_fetchindex()
+        artifacts = [
+            {
+                "prep_template_id": r[0],
+                "prep_name": r[1],
+                "artifact_id": r[2],
+                "artifact_type": r[3],
+                "data_type": r[4],
+                "full_path": r[5],
+                "generated_timestamp": str(r[6]) if r[6] else None,
+            }
+            for r in (rows or [])
+        ]
+    except Exception:
+        import traceback; traceback.print_exc()
+
+    return preps, artifacts
+
+
+@app.route('/api/studies/<int:study_id>/detail', methods=['GET'])
+def api_study_detail(study_id):
+    """Return prep templates, artifacts, and samples for a study, with SQLite caching for preps/artifacts."""
+    # --- preps + artifacts (cached) ---
+    cached = get_study_detail_cache(study_id)
+    if cached:
+        preps = json.loads(cached.get("preps_json") or "[]")
+        artifacts = json.loads(cached.get("artifacts_json") or "[]")
+        cache_hit = True
+    else:
+        try:
+            preps, artifacts = _fetch_study_detail_from_qiita(study_id)
+            upsert_study_detail_cache(study_id, json.dumps(preps), json.dumps(artifacts))
+            cache_hit = False
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            return jsonify({"error": str(e)}), 500
+
+    # Attach per-prep sequencing metadata (platform, target_gene, instrument)
+    for prep in preps:
+        pid = prep.get("prep_template_id")
+        if pid is not None:
+            prep.update(_fetch_prep_metadata_summary(pid))
+
+    # --- samples (always fetched fresh — not cached, can be large) ---
+    samples, total_samples = _fetch_study_samples(study_id, limit=200)
+
+    return jsonify({
+        "study_id": study_id,
+        "preps": preps,
+        "artifacts": artifacts,
+        "samples": samples,
+        "total_samples": total_samples,
+        "cached": cache_hit,
+    })
 
 
 @app.route('/api/search', methods=['POST'])
@@ -584,13 +708,62 @@ def api_update_project(project_id):
 
 @app.route('/api/projects/<project_id>', methods=['DELETE'])
 def api_delete_project(project_id):
-    user_id = request.args.get('user_id') or request.get_json(silent=True) or {}
-    if isinstance(user_id, dict):
-        user_id = user_id.get('user_id') or 'default'
-    else:
-        user_id = user_id or 'default'
+    user_id = (
+        request.args.get('user_id')
+        or (request.get_json(silent=True) or {}).get('user_id')
+        or 'default'
+    )
     delete_project(project_id, user_id)
     return jsonify({'ok': True})
+
+
+_bg_executor = ThreadPoolExecutor(max_workers=4)
+
+
+def _enrich_study_in_project(project_id: str, study_id: int):
+    """Background task: fetch num_samples + prep detail from Qiita and update project_studies."""
+    # num_samples
+    num_samples = None
+    try:
+        with TRN:
+            TRN.add(
+                "SELECT COUNT(*) FROM qiita.study_sample WHERE study_id = %s",
+                [int(study_id)],
+            )
+            cnt = TRN.execute_fetchindex()
+        num_samples = cnt[0][0] if cnt else 0
+    except Exception:
+        pass
+
+    # preps + artifacts
+    preps = []
+    try:
+        cached = get_study_detail_cache(study_id)
+        if cached:
+            preps = json.loads(cached.get("preps_json") or "[]")
+        else:
+            preps, artifacts = _fetch_study_detail_from_qiita(study_id)
+            upsert_study_detail_cache(study_id, json.dumps(preps), json.dumps(artifacts))
+    except Exception:
+        pass
+
+    data_types = None
+    num_preps = None
+    preps_json = None
+    if preps:
+        types = sorted({p.get("data_type") for p in preps if p.get("data_type")})
+        data_types = ", ".join(types) or None
+        num_preps = len(preps)
+        preps_json = json.dumps(preps)
+
+    update_project_study_data(
+        project_id,
+        study_id,
+        data_types=data_types,
+        num_samples=num_samples,
+        num_preps=num_preps,
+        preps_json=preps_json,
+    )
 
 
 @app.route('/api/projects/<project_id>/studies', methods=['POST'])
@@ -600,10 +773,43 @@ def api_add_study(project_id):
     study = data.get('study')
     if not study or study.get('study_id') is None:
         return jsonify({'error': 'study with study_id required'}), 400
+
     proj = add_study_to_project(project_id, user_id, study)
     if not proj:
         return jsonify({'error': 'Project not found'}), 404
+
+    # Kick off enrichment in background (non-blocking)
+    study_id = study.get('study_id')
+    _bg_executor.submit(_enrich_study_in_project, project_id, int(study_id))
+
     return jsonify(proj)
+
+
+@app.route('/api/projects/<project_id>/studies/enrich-all', methods=['POST'])
+def api_enrich_all_studies(project_id):
+    """Re-fetch enriched data (num_samples, data_types, preps) for all studies in a project."""
+    data = request.get_json(silent=True) or {}
+    user_id = (data.get('user_id') or 'default').strip() or 'default'
+    proj = get_project(project_id, user_id)
+    if not proj:
+        return jsonify({'error': 'Project not found'}), 404
+
+    studies = proj.get('studies') or []
+    futures = []
+    for s in studies:
+        sid = s.get('study_id')
+        if sid is not None:
+            futures.append(_bg_executor.submit(_enrich_study_in_project, project_id, int(sid)))
+
+    # Wait for all enrichment to finish, then return updated project
+    for f in futures:
+        try:
+            f.result(timeout=30)
+        except Exception:
+            pass
+
+    updated = get_project(project_id, user_id)
+    return jsonify({'ok': True, 'updated': len(futures), 'project': updated})
 
 
 @app.route('/api/projects/<project_id>/studies/<int:study_id>', methods=['DELETE'])
@@ -624,19 +830,21 @@ def api_rebuild_project_summaries(project_id):
         return jsonify({'error': 'Project not found'}), 404
 
     studies = proj.get('studies') or []
-    rebuilt = 0
-    for study in studies:
-        summary = _generate_study_summary(study)
-        if upsert_project_study_summary(project_id, user_id, study.get('study_id'), summary):
-            rebuilt += 1
 
-    refreshed_proj = get_project(project_id, user_id)
-    project_summary = _generate_project_summary(refreshed_proj.get('studies') or [])
+    def _rebuild_one(study):
+        summary = _generate_study_summary(study)
+        upsert_project_study_summary(project_id, user_id, study.get('study_id'), summary)
+        return True
+
+    with ThreadPoolExecutor() as pool:
+        rebuilt = sum(pool.map(_rebuild_one, studies))
+
+    project_summary = _generate_project_summary(studies)
     upsert_project_context_summary(
         project_id,
         user_id,
         project_summary,
-        source_updated_at=refreshed_proj.get('updated_at'),
+        source_updated_at=proj.get('updated_at'),
     )
     return jsonify({
         'ok': True,

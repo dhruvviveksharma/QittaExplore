@@ -82,11 +82,14 @@ function App() {
   const [compErr, setCompErr] = useState('');
 
   // Study detail modal
-  const [modalStudy, setModalStudy] = useState(null);
+  const [modalStudy,       setModalStudy]       = useState(null);
+  const [modalDetail,      setModalDetail]      = useState(null);  // {preps, artifacts} or null
+  const [modalDetailLoading, setModalDetailLoading] = useState(false);
 
-  const abortRef  = useRef(null);
-  const taRef     = useRef(null);
-  const bottomRef = useRef(null);
+  const abortRef      = useRef(null);
+  const taRef         = useRef(null);
+  const bottomRef     = useRef(null);
+  const modalAbortRef = useRef(null);
 
   // ── auto-size textarea ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -173,13 +176,13 @@ function App() {
   const addStudyToProject = async (study) => {
     if (!openProjId) return;
     const res = await apiPost(`/projects/${openProjId}/studies`, { user_id: USER_ID, study });
-    if (res.ok) fetchProjectDetail(openProjId);
+    if (res.ok) { const updated = await res.json(); setOpenProject(updated); }
   };
 
   const removeStudy = async (studyId) => {
     if (!openProjId) return;
-    await apiDel(`/projects/${openProjId}/studies/${studyId}?user_id=${USER_ID}`);
-    fetchProjectDetail(openProjId);
+    const res = await apiDel(`/projects/${openProjId}/studies/${studyId}?user_id=${USER_ID}`);
+    if (res.ok) { const updated = await res.json(); setOpenProject(updated); }
   };
 
   // ─── chat navigation (no full re-render / no reload) ──────────────────────────
@@ -200,16 +203,16 @@ function App() {
     if (!res.ok) return;
     const chat = await res.json();
     setChatCache(prev => ({ ...prev, [chat.chat_id]: { messages: [], title: 'New chat' } }));
+    setOpenProject(prev => prev ? { ...prev, chats: [{ ...chat, messages: [] }, ...(prev.chats || [])] } : prev);
     setView({ type: 'project-chat', projId, chatId: chat.chat_id });
     setCompErr('');
-    fetchProjectDetail(projId); // refresh sidebar chat list
   };
 
   const deleteProjChat = async (projId, chatId) => {
     await apiDel(`/projects/${projId}/chats/${chatId}?user_id=${USER_ID}`);
     setChatCache(prev => { const n = { ...prev }; delete n[chatId]; return n; });
     if (view.chatId === chatId) setView({ type: 'project-chat', projId, chatId: null });
-    fetchProjectDetail(projId);
+    setOpenProject(prev => prev ? { ...prev, chats: (prev.chats || []).filter(c => c.chat_id !== chatId) } : prev);
   };
 
   const newGlobChat = async () => {
@@ -217,16 +220,16 @@ function App() {
     if (!res.ok) return;
     const chat = await res.json();
     setChatCache(prev => ({ ...prev, [chat.chat_id]: { messages: [], title: 'New chat' } }));
+    setGlobalChats(prev => [chat, ...prev]);
     setView({ type: 'global-chat', chatId: chat.chat_id });
     setCompErr('');
-    loadGlobalChats();
   };
 
   const deleteGlobChat = async (chatId) => {
     await apiDel(`/global-chats/${chatId}?user_id=${USER_ID}`);
     setChatCache(prev => { const n = { ...prev }; delete n[chatId]; return n; });
     if (view.chatId === chatId) setView({ type: 'global-chat', chatId: null });
-    loadGlobalChats();
+    setGlobalChats(prev => prev.filter(c => c.chat_id !== chatId));
   };
 
   // ─── streaming (mutates cache in-place, never touches view) ───────────────────
@@ -285,7 +288,15 @@ function App() {
         if (!res.ok || !res.body) throw new Error('Stream failed');
         await parseSSE(res, {
           onToken: ({ token }) => patchLast(chatId, m => ({ ...m, content: (m.content||'') + (token||'') })),
-          onDone:  ()          => { patchLast(chatId, m => ({ ...m, isStreaming: false })); fetchProjectDetail(projId); },
+          onDone: () => {
+            patchLast(chatId, m => ({ ...m, isStreaming: false }));
+            const title = msg.slice(0, 60);
+            setChatCache(prev => ({ ...prev, [chatId]: { ...(prev[chatId]||{}), title } }));
+            setOpenProject(prev => prev ? {
+              ...prev,
+              chats: (prev.chats||[]).map(c => c.chat_id === chatId ? { ...c, title } : c)
+            } : prev);
+          },
           onError: ({ error }) => setCompErr(error || 'Error'),
         }, ctrl.signal);
 
@@ -297,6 +308,7 @@ function App() {
           const chat = await res.json();
           chatId = chat.chat_id;
           setChatCache(prev => ({ ...prev, [chatId]: { messages: [], title: msg.slice(0, 60) } }));
+          setGlobalChats(prev => [chat, ...prev]);
           setView(v => ({ ...v, chatId }));
         }
         optimisticAppend(chatId, msg);
@@ -308,7 +320,12 @@ function App() {
         if (!res.ok || !res.body) throw new Error('Stream failed');
         await parseSSE(res, {
           onToken: ({ token }) => patchLast(chatId, m => ({ ...m, content: (m.content||'') + (token||'') })),
-          onDone:  ()          => { patchLast(chatId, m => ({ ...m, isStreaming: false })); loadGlobalChats(); },
+          onDone: () => {
+            patchLast(chatId, m => ({ ...m, isStreaming: false }));
+            const title = msg.slice(0, 60);
+            setChatCache(prev => ({ ...prev, [chatId]: { ...(prev[chatId]||{}), title } }));
+            setGlobalChats(prev => prev.map(c => c.chat_id === chatId ? { ...c, title } : c));
+          },
           onError: ({ error }) => setCompErr(error || 'Error'),
         }, ctrl.signal);
       }
@@ -317,6 +334,30 @@ function App() {
     } finally {
       setSending(false);
     }
+  };
+
+  // ─── open study modal with lazy detail fetch (abortable) ───────────────────
+  const openStudyModal = async (study) => {
+    modalAbortRef.current?.abort();
+    const ctrl = new AbortController();
+    modalAbortRef.current = ctrl;
+    setModalStudy(study); setModalDetail(null); setModalDetailLoading(true);
+    try {
+      const res = await apiFetch(`/studies/${study.study_id}/detail`, { signal: ctrl.signal });
+      if (res.ok && !ctrl.signal.aborted) { const d = await res.json(); setModalDetail(d); }
+    } catch (_) {}
+    if (!ctrl.signal.aborted) setModalDetailLoading(false);
+  };
+
+  const closeModal = () => {
+    modalAbortRef.current?.abort();
+    setModalStudy(null); setModalDetail(null);
+  };
+
+  // ─── enrich all project studies from Qiita ──────────────────────────────────
+  const enrichAllStudies = async (projId) => {
+    const res = await apiPost(`/projects/${projId}/studies/enrich-all`, { user_id: USER_ID });
+    if (res.ok) { const d = await res.json(); if (d.project) setOpenProject(d.project); }
   };
 
   // ─── search ───────────────────────────────────────────────────────────────────
@@ -338,14 +379,14 @@ function App() {
   const isChat  = view.type === 'project-chat' || view.type === 'global-chat';
   const canSend = isChat && input.trim().length > 0 && !sending;
 
-  const topTitle = () => {
+  const topTitle = useMemo(() => {
     if (view.type === 'project-chat') {
       const proj = projects.find(p => p.project_id === view.projId);
       return chatCache[view.chatId]?.title || proj?.name || 'Project Chat';
     }
     if (view.type === 'global-chat') return chatCache[view.chatId]?.title || 'Global Chat';
     return 'Browse Studies';
-  };
+  }, [view, chatCache, projects]);
 
   // ─── render ───────────────────────────────────────────────────────────────────
   return (
@@ -420,12 +461,22 @@ function App() {
                     </div>
                   ))}
 
+                  {/* Sources header with refresh button */}
+                  {projInnerTab === 'sources' && (openProject?.studies || []).length > 0 && (
+                    <div className="sources-tab-header">
+                      <button className="folder-refresh-btn" title="Refresh sample/prep data from Qiita"
+                        onClick={e => { e.stopPropagation(); enrichAllStudies(p.project_id); }}>
+                        ↻ Refresh Data
+                      </button>
+                    </div>
+                  )}
+
                   {/* Sources */}
                   {projInnerTab === 'sources' && (openProject?.studies || []).length === 0 && (
                     <div className="folder-empty">No studies yet. Use Browse to add some.</div>
                   )}
                   {projInnerTab === 'sources' && (openProject?.studies || []).map(s => (
-                    <div key={s.study_id} className="chat-row" onClick={() => setModalStudy(s)}>
+                    <div key={s.study_id} className="chat-row" onClick={() => openStudyModal(s)}>
                       <div className="cr-content">
                         <div className="cr-title">{s.study_title || 'Untitled'}</div>
                         <div className="cr-date">ID {s.study_id}</div>
@@ -499,7 +550,7 @@ function App() {
 
         {/* Topbar */}
         <div className="topbar">
-          <span className="topbar-title">{topTitle()}</span>
+          <span className="topbar-title">{topTitle}</span>
           {view.type === 'project-chat' && openProject?.studies?.length > 0 && (
             <span className="topbar-badge">{openProject.studies.length} sources</span>
           )}
@@ -568,8 +619,13 @@ function App() {
                     {displayStudies.map(study => {
                       const inProj = projStudyIds.includes(study.study_id);
                       const inCtx  = ctxStudyIds.includes(study.study_id);
+                      const dataTypeList = (study.data_types || '').split(',').map(t => t.trim()).filter(Boolean);
+                      const metaParts = [
+                        study.num_samples != null ? `${study.num_samples} samples` : null,
+                        study.num_preps    != null ? `${study.num_preps} preps`    : null,
+                      ].filter(Boolean);
                       return (
-                        <div key={study.study_id} className="study-card" onClick={() => setModalStudy(study)}>
+                        <div key={study.study_id} className="study-card" onClick={() => openStudyModal(study)}>
                           <div className="study-card-top">
                             <span className="study-id-badge">ID {study.study_id}</span>
                             <div className="study-card-actions" onClick={e => e.stopPropagation()}>
@@ -588,6 +644,14 @@ function App() {
                           </div>
                           <div className="study-card-title">{study.study_title || 'Untitled study'}</div>
                           <div className="study-card-abstract">{study.study_abstract || 'No abstract available.'}</div>
+                          {dataTypeList.length > 0 && (
+                            <div className="study-card-types">
+                              {dataTypeList.map(t => <span key={t} className="dtype-chip">{t}</span>)}
+                            </div>
+                          )}
+                          {metaParts.length > 0 && (
+                            <div className="study-card-meta">{metaParts.join(' · ')}</div>
+                          )}
                           {(study.pi_name || study.pi_affiliation) && (
                             <div className="study-card-pi">
                               {[study.pi_name, study.pi_affiliation].filter(Boolean).join(' · ')}
@@ -610,7 +674,7 @@ function App() {
                 <div className="sources-bar">
                   <span className="sources-label">Sources</span>
                   {(openProject.studies||[]).map(s => (
-                    <button key={s.study_id} className="src-chip" onClick={() => setModalStudy(s)}>
+                    <button key={s.study_id} className="src-chip" onClick={() => openStudyModal(s)}>
                       {(s.study_title||'Untitled').slice(0,40)}
                     </button>
                   ))}
@@ -694,11 +758,23 @@ function App() {
 
       {/* ══════════════════ MODAL ══════════════════════ */}
       {modalStudy && (
-        <div className="modal-overlay" onClick={() => setModalStudy(null)}>
+        <div className="modal-overlay" onClick={closeModal}>
           <div className="modal-card" onClick={e => e.stopPropagation()}>
-            <button className="modal-close" onClick={() => setModalStudy(null)}>×</button>
+            <button className="modal-close" onClick={closeModal}>×</button>
             <div className="modal-id">Study ID {modalStudy.study_id}</div>
             <div className="modal-title">{modalStudy.study_title || 'Untitled study'}</div>
+
+            {/* Quick stats row */}
+            {(modalStudy.data_types || modalStudy.num_samples != null || modalStudy.num_preps != null) && (
+              <div className="modal-stats">
+                {(modalStudy.data_types || '').split(',').map(t => t.trim()).filter(Boolean).map(t => (
+                  <span key={t} className="dtype-chip">{t}</span>
+                ))}
+                {modalStudy.num_samples != null && <span className="modal-stat">{modalStudy.num_samples} samples</span>}
+                {modalStudy.num_preps   != null && <span className="modal-stat">{modalStudy.num_preps} preps</span>}
+              </div>
+            )}
+
             {modalStudy.study_abstract && (
               <div className="modal-section"><h4>Abstract</h4><p>{modalStudy.study_abstract}</p></div>
             )}
@@ -710,6 +786,92 @@ function App() {
             )}
             {modalStudy.pi_email && (
               <div className="modal-section"><h4>Contact</h4><p>{modalStudy.pi_email}</p></div>
+            )}
+
+            {/* Prep templates — lazy loaded */}
+            <div className="modal-section">
+              <h4>Prep Templates</h4>
+              {modalDetailLoading && <div className="modal-detail-loading">Loading…</div>}
+              {!modalDetailLoading && modalDetail && (modalDetail.preps || []).length === 0 && (
+                <p style={{color:'var(--text-3)', fontSize:'0.85rem'}}>No prep templates found.</p>
+              )}
+              {!modalDetailLoading && modalDetail && (modalDetail.preps || []).length > 0 && (
+                <table className="prep-table">
+                  <thead>
+                    <tr><th>Prep ID</th><th>Data Type</th><th>Investigation</th><th>Platform</th><th>Target Gene</th><th>Status</th></tr>
+                  </thead>
+                  <tbody>
+                    {modalDetail.preps.map(p => (
+                      <tr key={p.prep_template_id}>
+                        <td>{p.prep_template_id}</td>
+                        <td>{p.data_type || '—'}</td>
+                        <td>{p.investigation_type || '—'}</td>
+                        <td>{p.platform || '—'}</td>
+                        <td>{p.target_gene || '—'}</td>
+                        <td>{p.preprocessing_status || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            {/* Samples — lazy loaded */}
+            {!modalDetailLoading && modalDetail && (
+              <div className="modal-section">
+                <h4>Samples{modalDetail.total_samples != null ? ` (${modalDetail.total_samples} total${modalDetail.total_samples > 200 ? ', showing first 200' : ''})` : ''}</h4>
+                {(modalDetail.samples || []).length === 0 ? (
+                  <p style={{color:'var(--text-3)', fontSize:'0.85rem'}}>No samples found.</p>
+                ) : (
+                  <div className="samples-table-wrap">
+                    <table className="prep-table">
+                      <thead>
+                        <tr><th>Sample ID</th><th>Anonymized Name</th><th>Env Package</th><th>Collection Date</th></tr>
+                      </thead>
+                      <tbody>
+                        {modalDetail.samples.map(s => (
+                          <tr key={s.sample_id}>
+                            <td>{s.sample_id}</td>
+                            <td>{s.anonymized_name || '—'}</td>
+                            <td>{s.env_package || '—'}</td>
+                            <td>{s.collection_timestamp ? s.collection_timestamp.slice(0, 10) : '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Artifacts */}
+            {!modalDetailLoading && modalDetail && (modalDetail.artifacts || []).length > 0 && (
+              <div className="modal-section">
+                <h4>Artifacts</h4>
+                <table className="prep-table">
+                  <thead>
+                    <tr><th>Artifact ID</th><th>Type</th><th>Data Type</th><th>File Path</th></tr>
+                  </thead>
+                  <tbody>
+                    {modalDetail.artifacts.map(a => (
+                      <tr key={`${a.prep_template_id}-${a.artifact_id}`}>
+                        <td>{a.artifact_id}</td>
+                        <td>{a.artifact_type || '—'}</td>
+                        <td>{a.data_type || '—'}</td>
+                        <td className="artifact-path-cell">
+                          <span className="artifact-path" title={a.full_path}>{a.full_path ? a.full_path.split('/').slice(-2).join('/') : '—'}</span>
+                          {a.full_path && (
+                            <button className="btn-copy-path" title="Copy full path"
+                              onClick={() => navigator.clipboard?.writeText(a.full_path)}>
+                              ⎘
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </div>
         </div>

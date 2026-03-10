@@ -617,6 +617,36 @@ input, textarea { font-family: var(--sans); }
 .modal-section h4 { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing:.07em; color: var(--text-3); margin-bottom: 5px; }
 .modal-section p { font-size: 13.5px; color: var(--text-2); line-height: 1.65; }
 
+.modal-stats { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 14px; }
+.modal-stat  { font-size: 11.5px; color: var(--text-2); background: var(--bg); border: 1px solid var(--border-soft); border-radius: 4px; padding: 2px 7px; }
+.modal-detail-loading { font-size: 12px; color: var(--text-3); padding: 6px 0; }
+
+.prep-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 4px; }
+.prep-table th { text-align: left; font-weight: 600; color: var(--text-3); border-bottom: 1px solid var(--border-soft); padding: 4px 8px 4px 0; font-size: 10.5px; text-transform: uppercase; letter-spacing:.04em; }
+.prep-table td { padding: 5px 8px 5px 0; color: var(--text-2); border-bottom: 1px solid var(--border-soft); }
+.prep-table tr:last-child td { border-bottom: none; }
+
+/* ── Study card enriched fields ─────────────────────────────── */
+.study-card-types { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 2px; }
+.dtype-chip { font-size: 10.5px; font-weight: 600; color: var(--accent); background: var(--accent-soft); border-radius: 4px; padding: 2px 6px; white-space: nowrap; }
+.study-card-meta { font-size: 11px; color: var(--text-3); margin: 2px 0 4px; }
+
+/* ── Sources tab header + refresh button ─────────────────────── */
+.sources-tab-header { padding: 4px 10px 2px; display: flex; justify-content: flex-end; }
+.folder-refresh-btn { font-size: 11px; color: var(--text-3); padding: 2px 7px; border-radius: 4px; border: 1px solid var(--border-soft); background: transparent; transition: all var(--t); }
+.folder-refresh-btn:hover { color: var(--accent); border-color: var(--accent); }
+
+/* ── Samples table ───────────────────────────────────────────── */
+.samples-table-wrap { max-height: 280px; overflow-y: auto; border: 1px solid var(--border-soft); border-radius: var(--radius-s); }
+.samples-table-wrap .prep-table { margin-top: 0; }
+.samples-table-wrap .prep-table th { position: sticky; top: 0; background: var(--surface); z-index: 1; }
+
+/* ── Artifact path cell ──────────────────────────────────────── */
+.artifact-path-cell { display: flex; align-items: center; gap: 6px; max-width: 340px; }
+.artifact-path { font-size: 11.5px; color: var(--text-2); font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.btn-copy-path { font-size: 13px; color: var(--text-3); padding: 1px 5px; border-radius: 3px; border: 1px solid var(--border-soft); flex-shrink: 0; transition: all var(--t); }
+.btn-copy-path:hover { color: var(--accent); border-color: var(--accent); }
+
 /* ── Responsive ─────────────────────────────────────────────── */
 @media (max-width: 720px) {
   :root { --sidebar-w: 220px; }

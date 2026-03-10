@@ -120,12 +120,30 @@ def _create_schema(conn):
             FOREIGN KEY (chat_id) REFERENCES global_chats(chat_id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS study_detail_cache (
+            study_id INTEGER PRIMARY KEY,
+            preps_json TEXT,
+            artifacts_json TEXT,
+            cached_at TEXT
+        );
+
         CREATE INDEX IF NOT EXISTS idx_projects_user_updated ON projects(user_id, updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_project_studies_project ON project_studies(project_id, updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_project_chats_project_updated ON project_chats(project_id, updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_global_chats_user_updated ON global_chats(user_id, updated_at DESC);
         """
     )
+    # Migrate project_studies to add enriched columns if they don't exist
+    for col, definition in [
+        ("data_types", "TEXT"),
+        ("num_samples", "INTEGER"),
+        ("num_preps", "INTEGER"),
+        ("preps_json", "TEXT"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE project_studies ADD COLUMN {col} {definition}")
+        except Exception:
+            pass  # column already exists
 
 
 def _mark_migration(conn):
@@ -300,7 +318,8 @@ def _load_project_studies(conn, project_id):
     rows = conn.execute(
         """
         SELECT study_id, study_title, study_abstract, pi_name, pi_email, pi_affiliation,
-               lab_person_name, summary_text, added_at, updated_at
+               lab_person_name, summary_text, data_types, num_samples, num_preps, preps_json,
+               added_at, updated_at
         FROM project_studies
         WHERE project_id = ?
         ORDER BY added_at DESC, study_id ASC
@@ -333,12 +352,22 @@ def _load_project_chats(conn, project_id):
         """,
         (project_id,),
     ).fetchall()
-    chats = []
-    for row in rows:
-        item = _as_dict(row)
-        item["messages"] = _load_project_chat_messages(conn, row["chat_id"])
-        chats.append(item)
-    return chats
+    if not rows:
+        return []
+    chat_ids = [r["chat_id"] for r in rows]
+    placeholders = ",".join("?" * len(chat_ids))
+    msg_rows = conn.execute(
+        f"SELECT chat_id, role, content, created_at FROM project_chat_messages "
+        f"WHERE chat_id IN ({placeholders}) ORDER BY id ASC",
+        chat_ids,
+    ).fetchall()
+    messages_by_chat = {}
+    for msg in msg_rows:
+        messages_by_chat.setdefault(msg["chat_id"], []).append(_as_dict(msg))
+    return [
+        {**_as_dict(row), "messages": messages_by_chat.get(row["chat_id"], [])}
+        for row in rows
+    ]
 
 
 def create_project(user_id: str, name: str):
@@ -428,8 +457,9 @@ def add_study_to_project(project_id: str, user_id: str, study: dict):
             INSERT OR IGNORE INTO project_studies(
                 project_id, study_id, study_title, study_abstract, pi_name,
                 pi_email, pi_affiliation, lab_person_name, summary_text,
+                data_types, num_samples, num_preps, preps_json,
                 added_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 project_id,
@@ -441,6 +471,10 @@ def add_study_to_project(project_id: str, user_id: str, study: dict):
                 study.get("pi_affiliation"),
                 study.get("lab_person_name"),
                 study.get("summary_text"),
+                study.get("data_types"),
+                study.get("num_samples"),
+                study.get("num_preps"),
+                study.get("preps_json"),
                 now,
                 now,
             ),
@@ -531,7 +565,7 @@ def create_chat(project_id: str, user_id: str, first_message: str = None):
         )
         conn.execute(
             "UPDATE projects SET updated_at = ? WHERE project_id = ? AND user_id = ?",
-            (_now(), project_id, resolved_user),
+            (now, project_id, resolved_user),
         )
         conn.commit()
     return get_chat(project_id, resolved_user, chat_id)
@@ -563,11 +597,11 @@ def append_chat_messages(project_id: str, user_id: str, chat_id: str, user_conte
 
         conn.execute(
             "UPDATE project_chats SET title = ?, updated_at = ? WHERE chat_id = ?",
-            (title, _now(), chat_id),
+            (title, now, chat_id),
         )
         conn.execute(
             "UPDATE projects SET updated_at = ? WHERE project_id = ? AND user_id = ?",
-            (_now(), project_id, resolved_user),
+            (now, project_id, resolved_user),
         )
         conn.commit()
 
@@ -667,7 +701,7 @@ def append_global_chat_messages(user_id: str, chat_id: str, user_content: str, a
 
         conn.execute(
             "UPDATE global_chats SET title = ?, updated_at = ? WHERE user_id = ? AND chat_id = ?",
-            (title, _now(), resolved_user, chat_id),
+            (title, now, resolved_user, chat_id),
         )
         conn.commit()
 
@@ -735,9 +769,78 @@ def upsert_project_context_summary(project_id: str, user_id: str, summary_text: 
     return True
 
 
+def update_project_study_data(
+    project_id: str,
+    study_id: int,
+    *,
+    data_types=None,
+    num_samples=None,
+    num_preps=None,
+    preps_json=None,
+):
+    """Update enriched columns for an existing project_studies row (COALESCE — only overwrites NULLs)."""
+    with _conn() as conn:
+        conn.execute(
+            """
+            UPDATE project_studies
+            SET data_types  = COALESCE(?, data_types),
+                num_samples = COALESCE(?, num_samples),
+                num_preps   = COALESCE(?, num_preps),
+                preps_json  = COALESCE(?, preps_json),
+                updated_at  = ?
+            WHERE project_id = ? AND study_id = ?
+            """,
+            (data_types, num_samples, num_preps, preps_json, _now(), project_id, int(study_id)),
+        )
+        conn.commit()
+    return True
+
+
 def list_project_studies(project_id: str, user_id: str):
     resolved_user = (user_id or "").strip() or "default"
     with _conn() as conn:
         if not _project_exists(conn, project_id, resolved_user):
             return []
         return _load_project_studies(conn, project_id)
+
+
+_STUDY_DETAIL_CACHE_TTL_HOURS = 6
+
+
+def get_study_detail_cache(study_id: int):
+    """Return cached study detail if it exists and is less than TTL hours old, else None."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT preps_json, artifacts_json, cached_at FROM study_detail_cache WHERE study_id = ?",
+            (int(study_id),),
+        ).fetchone()
+    if row is None:
+        return None
+    cached_at = row["cached_at"]
+    if cached_at:
+        try:
+            from datetime import timezone
+            age = datetime.utcnow() - datetime.fromisoformat(cached_at.rstrip("Z"))
+            if age.total_seconds() > _STUDY_DETAIL_CACHE_TTL_HOURS * 3600:
+                return None
+        except Exception:
+            pass
+    return _as_dict(row)
+
+
+def upsert_study_detail_cache(study_id: int, preps_json: str, artifacts_json: str):
+    """Cache study detail (preps + artifacts) from Qiita."""
+    with _conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO study_detail_cache(study_id, preps_json, artifacts_json, cached_at)
+            VALUES(?, ?, ?, ?)
+            ON CONFLICT(study_id) DO UPDATE SET
+                preps_json = excluded.preps_json,
+                artifacts_json = excluded.artifacts_json,
+                cached_at = excluded.cached_at
+            """,
+            (int(study_id), preps_json or "[]", artifacts_json or "[]", _now()),
+        )
+        conn.commit()
+    return True
