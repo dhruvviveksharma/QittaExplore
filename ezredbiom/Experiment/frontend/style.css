@@ -647,6 +647,53 @@ input, textarea { font-family: var(--sans); }
 .btn-copy-path { font-size: 13px; color: var(--text-3); padding: 1px 5px; border-radius: 3px; border: 1px solid var(--border-soft); flex-shrink: 0; transition: all var(--t); }
 .btn-copy-path:hover { color: var(--accent); border-color: var(--accent); }
 
+/* ── Sample preview card ─────────────────────────────────────── */
+.sample-preview-card {
+  flex: 1;
+  min-width: 200px;
+  max-height: 280px;
+  overflow-y: auto;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-s);
+  background: var(--surface);
+  position: sticky;
+  top: 0;
+}
+.sample-preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.4rem 0.6rem;
+  font-weight: 600;
+  font-size: 0.8rem;
+  border-bottom: 1px solid var(--border-soft);
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+  z-index: 1;
+}
+.sample-preview-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-3);
+  font-size: 0.85rem;
+  padding: 0 2px;
+  line-height: 1;
+}
+.sample-preview-close:hover { color: var(--text-1); }
+.sample-preview-body { padding: 0.15rem 0; }
+.sample-preview-row {
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.18rem 0.6rem;
+  font-size: 0.78rem;
+  border-bottom: 1px solid var(--border-soft);
+}
+.sample-preview-row:last-child { border-bottom: none; }
+.sample-preview-key { color: var(--text-3); flex: 0 0 44%; word-break: break-word; }
+.sample-preview-val { color: var(--text-2); flex: 1; word-break: break-word; }
+
 /* ── Responsive ─────────────────────────────────────────────── */
 @media (max-width: 720px) {
   :root { --sidebar-w: 220px; }

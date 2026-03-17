@@ -86,6 +86,8 @@ function App() {
   const [modalStudy,       setModalStudy]       = useState(null);
   const [modalDetail,      setModalDetail]      = useState(null);  // {preps, artifacts} or null
   const [modalDetailLoading, setModalDetailLoading] = useState(false);
+  const [samplePreview,        setSamplePreview]        = useState(null);  // {sample_id, fields}
+  const [samplePreviewLoading, setSamplePreviewLoading] = useState(false);
 
   const abortRef      = useRef(null);
   const taRef         = useRef(null);
@@ -342,7 +344,7 @@ function App() {
     modalAbortRef.current?.abort();
     const ctrl = new AbortController();
     modalAbortRef.current = ctrl;
-    setModalStudy(study); setModalDetail(null); setModalDetailLoading(true);
+    setModalStudy(study); setModalDetail(null); setModalDetailLoading(true); setSamplePreview(null);
     try {
       const res = await apiFetch(`/studies/${study.study_id}/detail`, { signal: ctrl.signal });
       if (res.ok && !ctrl.signal.aborted) { const d = await res.json(); setModalDetail(d); }
@@ -350,9 +352,19 @@ function App() {
     if (!ctrl.signal.aborted) setModalDetailLoading(false);
   };
 
+  const fetchSamplePreview = async (studyId, sampleId) => {
+    if (samplePreview?.sample_id === sampleId) { setSamplePreview(null); return; }
+    setSamplePreviewLoading(true);
+    try {
+      const res = await apiFetch(`/studies/${studyId}/samples/${encodeURIComponent(sampleId)}`);
+      if (res.ok) setSamplePreview(await res.json());
+    } catch (_) {}
+    setSamplePreviewLoading(false);
+  };
+
   const closeModal = () => {
     modalAbortRef.current?.abort();
-    setModalStudy(null); setModalDetail(null);
+    setModalStudy(null); setModalDetail(null); setSamplePreview(null);
   };
 
   // ─── enrich all project studies from Qiita ──────────────────────────────────
@@ -824,22 +836,48 @@ function App() {
                 {(modalDetail.samples || []).length === 0 ? (
                   <p style={{color:'var(--text-3)', fontSize:'0.85rem'}}>No samples found.</p>
                 ) : (
-                  <div className="samples-table-wrap">
-                    <table className="prep-table">
-                      <thead>
-                        <tr><th>Sample ID</th><th>Anonymized Name</th><th>Env Package</th><th>Collection Date</th></tr>
-                      </thead>
-                      <tbody>
-                        {modalDetail.samples.map(s => (
-                          <tr key={s.sample_id}>
-                            <td>{s.sample_id}</td>
-                            <td>{s.anonymized_name || '—'}</td>
-                            <td>{s.env_package || '—'}</td>
-                            <td>{s.collection_timestamp ? s.collection_timestamp.slice(0, 10) : '—'}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                  <div style={{display:'flex', gap:'1rem', alignItems:'flex-start'}}>
+                    <div className="samples-table-wrap" style={{flex:'0 0 auto', maxWidth:'55%'}}>
+                      <table className="prep-table">
+                        <thead>
+                          <tr><th>Sample ID</th><th>Anonymized Name</th><th>Env Package</th><th>Collection Date</th></tr>
+                        </thead>
+                        <tbody>
+                          {modalDetail.samples.map(s => (
+                            <tr key={s.sample_id}
+                                onClick={() => fetchSamplePreview(modalStudy.study_id, s.sample_id)}
+                                style={{cursor:'pointer', background: samplePreview?.sample_id === s.sample_id ? 'var(--accent-bg,#f0f4ff)' : ''}}>
+                              <td>{s.sample_id}</td>
+                              <td>{s.anonymized_name || '—'}</td>
+                              <td>{s.env_package || '—'}</td>
+                              <td>{s.collection_timestamp ? s.collection_timestamp.slice(0, 10) : '—'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    {samplePreviewLoading && (
+                      <div style={{flex:1, color:'var(--text-3)', fontSize:'0.85rem', paddingTop:'0.5rem'}}>Loading…</div>
+                    )}
+                    {!samplePreviewLoading && samplePreview && (
+                      <div className="sample-preview-card">
+                        <div className="sample-preview-header">
+                          <span>{samplePreview.sample_id}</span>
+                          <button className="sample-preview-close" onClick={() => setSamplePreview(null)}>✕</button>
+                        </div>
+                        <div className="sample-preview-body">
+                          {Object.entries(samplePreview.fields)
+                            .filter(([,v]) => v != null && v !== '')
+                            .sort(([a],[b]) => a.localeCompare(b))
+                            .map(([k,v]) => (
+                              <div key={k} className="sample-preview-row">
+                                <span className="sample-preview-key">{k}</span>
+                                <span className="sample-preview-val">{String(v)}</span>
+                              </div>
+                            ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

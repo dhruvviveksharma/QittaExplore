@@ -621,6 +621,27 @@ def api_study_detail(study_id):
     })
 
 
+@app.route('/api/studies/<int:study_id>/samples/<path:sample_id>', methods=['GET'])
+def api_sample_detail(study_id, sample_id):
+    """Return all metadata fields for a single sample from qiita.sample_{study_id}."""
+    try:
+        with TRN:
+            TRN.add(f"""
+                SELECT sample_values
+                FROM qiita.sample_{study_id}
+                WHERE sample_id = %s
+                  AND sample_id <> 'qiita_sample_column_names'
+            """, [sample_id])
+            rows = TRN.execute_fetchindex()
+        if not rows:
+            return jsonify({'error': 'Sample not found'}), 404
+        fields = dict(rows[0][0])
+        fields.pop('qiita_study_id', None)
+        return jsonify({'sample_id': sample_id, 'fields': fields})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/search', methods=['POST'])
 def search():
     try:
