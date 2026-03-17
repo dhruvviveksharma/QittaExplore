@@ -6,6 +6,9 @@ cd "$SCRIPT_DIR/backend"
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate qiita-web
 
+# Point Qiita at the repo's config file (has correct qiita-db-rc credentials)
+export QIITA_CONFIG_FP="${QIITA_CONFIG_FP:-$SCRIPT_DIR/../qiita_config.cfg}"
+
 export QIITA_EXPERIMENT_DB_PATH="${QIITA_EXPERIMENT_DB_PATH:-$HOME/.qiita-experiment/projects.db}"
 mkdir -p "$(dirname "$QIITA_EXPERIMENT_DB_PATH")"
 
