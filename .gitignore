@@ -80,3 +80,5 @@ notebooks/resource-allocation/data
 qiita_db/support_files/patches/test_db_sql/91.sql
 
 *.env
+qiita_config.cfg
+qiita_core/support_files/config_test.cfg
