@@ -93,3 +93,4 @@ qiita_db/support_files/patches/test_db_sql/91.sql
 *.pdf
 test_data_studies/
 qiita_config.cfg
+src/qiita-spots
