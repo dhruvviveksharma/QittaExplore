@@ -49,6 +49,7 @@ client = OpenAI(
 )
 PROJECT_CONTEXT_MAX_CHARS = int(os.getenv("PROJECT_CONTEXT_MAX_CHARS", "12000"))
 PROJECT_SUMMARY_GEN_LIMIT = int(os.getenv("PROJECT_SUMMARY_GEN_LIMIT", "5"))
+GLOBAL_CONTEXT_MAX_CHARS  = int(os.getenv("GLOBAL_CONTEXT_MAX_CHARS", "24000"))
 
 CHAT_SYSTEM_PROMPT = """You are a helpful assistant for researchers using the Qiita microbiome database.
 
@@ -70,7 +71,26 @@ Behavioral rules:
 
 When answering:
 - Prefer concise, technically accurate explanations.
-- Use bullet points and short paragraphs where helpful.
+- Format all responses using Markdown (bold, bullets, code blocks, headers where appropriate).
+- Do not output SQL or code unless the user explicitly asks for it."""
+
+GLOBAL_CHAT_SYSTEM_PROMPT = """You are a discovery assistant for the Qiita microbiome database.
+
+Your primary goal is to help researchers find studies from the entire Qiita database that match their scientific criteria.
+
+Behavioral rules:
+- You will be given a set of studies retrieved from the database that are relevant to the user's query. Use them to give specific, accurate answers.
+- When describing studies, include study ID, title, PI, sample count, data types, and a brief description of scope.
+- If no studies were found, say so clearly and suggest rephrasing the search or broadening the criteria.
+- NEVER invent study IDs, sample counts, or metadata fields not present in the provided context.
+- You may suggest which studies look most relevant to the researcher's goals.
+- You may suggest follow-up searches or filtering criteria to narrow or broaden results.
+- If the user asks a conceptual question, answer it but also offer to help find relevant studies.
+
+When answering:
+- Prefer organized, scannable responses — use tables or bullet lists for multiple studies.
+- Format all responses using Markdown (bold, bullets, code blocks, headers where appropriate).
+- Be concise about individual studies; prioritize breadth over depth unless asked to go deep on one study.
 - Do not output SQL or code unless the user explicitly asks for it."""
 
 
@@ -333,7 +353,8 @@ def _build_selected_studies_context(selected_studies):
     )
 
 
-def _build_api_messages(messages, study_context_text: str):
+def _build_api_messages(messages, study_context_text: str, system_prompt: str = None):
+    prompt = system_prompt or CHAT_SYSTEM_PROMPT
     if study_context_text:
         context_block = f"\n\nSTUDY CONTEXT:\n{study_context_text}"
     else:
@@ -341,21 +362,36 @@ def _build_api_messages(messages, study_context_text: str):
             "\n\nSTUDY CONTEXT:\n"
             "No study records were provided for this request. Do not list specific studies."
         )
-    system_content = CHAT_SYSTEM_PROMPT + context_block
+    system_content = prompt + context_block
     return [{"role": "system", "content": system_content}] + _normalize_messages(messages)
 
 
-def llm_chat(messages, study_context_text: str):
+def _build_global_search_context(studies, user_query: str):
+    """Build LLM context from auto-searched studies for global chat."""
+    if not studies:
+        return f'A database search for "{user_query}" returned no matching studies in Qiita. Suggest rephrasing or broadening the query.'
+    lines = [f'The following {len(studies)} studies were retrieved from Qiita based on the query "{user_query}":\n']
+    running = len(lines[0])
+    for s in studies:
+        block = _study_detail_block(s)
+        if running + len(block) > GLOBAL_CONTEXT_MAX_CHARS:
+            break
+        lines.append(block)
+        running += len(block)
+    return "\n".join(lines)
+
+
+def llm_chat(messages, study_context_text: str, system_prompt: str = None):
     r = client.chat.completions.create(
-        model="gemma3", messages=_build_api_messages(messages, study_context_text)
+        model="gemma3", messages=_build_api_messages(messages, study_context_text, system_prompt)
     )
     return (r.choices[0].message.content or "").strip()
 
 
-def llm_chat_stream(messages, study_context_text: str):
+def llm_chat_stream(messages, study_context_text: str, system_prompt: str = None):
     stream = client.chat.completions.create(
         model="gemma3",
-        messages=_build_api_messages(messages, study_context_text),
+        messages=_build_api_messages(messages, study_context_text, system_prompt),
         stream=True,
     )
     for chunk in stream:
@@ -1051,7 +1087,6 @@ def api_global_chat_message_stream(chat_id):
     data = request.get_json() or {}
     user_id = (data.get('user_id') or 'default').strip() or 'default'
     user_content = (data.get('message') or data.get('content') or '').strip()
-    selected_studies = data.get('selected_studies') or []
     if not user_content:
         return jsonify({'error': 'message required'}), 400
 
@@ -1059,7 +1094,17 @@ def api_global_chat_message_stream(chat_id):
     if not chat:
         return jsonify({'error': 'Chat not found'}), 404
 
-    study_ctx = _build_selected_studies_context(selected_studies)
+    # Auto-search the Qiita DB based on the user's message before streaming
+    try:
+        sql_spec = llm_query_to_sql(user_content)
+        studies = search_studies_with_sql(
+            sql_spec.get("where_clause", "1=1"),
+            sql_spec.get("params", [])
+        )
+    except Exception:
+        studies = []
+
+    study_ctx = _build_global_search_context(studies, user_content)
     messages = chat.get('messages') or []
     full_messages = [{"role": m.get("role"), "content": m.get("content")} for m in messages]
     full_messages.append({"role": "user", "content": user_content})
@@ -1067,7 +1112,11 @@ def api_global_chat_message_stream(chat_id):
     def generate():
         assistant_parts = []
         try:
-            for token in llm_chat_stream(full_messages, study_context_text=study_ctx):
+            for token in llm_chat_stream(
+                full_messages,
+                study_context_text=study_ctx,
+                system_prompt=GLOBAL_CHAT_SYSTEM_PROMPT,
+            ):
                 assistant_parts.append(token)
                 yield _sse("token", {"token": token})
             assistant_content = "".join(assistant_parts).strip()

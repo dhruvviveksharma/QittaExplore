@@ -729,10 +729,16 @@ function App() {
                 ) : (
                   activeMsgs.map((m, i) => (
                     <div key={i} className={`msg-row ${m.role}`}>
-                      <div className="msg-bubble">
-                        {m.content}
-                        {m.isStreaming && <span className="typing-caret" />}
-                      </div>
+                      {m.role === 'assistant' ? (
+                        <div
+                          className={`msg-bubble${m.isStreaming ? ' streaming' : ''}`}
+                          dangerouslySetInnerHTML={{
+                            __html: DOMPurify.sanitize(marked.parse(m.content || ''))
+                          }}
+                        />
+                      ) : (
+                        <div className="msg-bubble">{m.content}</div>
+                      )}
                     </div>
                   ))
                 )}
