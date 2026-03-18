@@ -396,6 +396,22 @@ input, textarea { font-family: var(--sans); }
 }
 @keyframes blink { 0%,50%{opacity:1} 51%,100%{opacity:0} }
 
+/* ── Markdown rendering inside msg-bubble ────────────────────── */
+.msg-bubble p { margin: 0 0 0.45em; }
+.msg-bubble p:last-child { margin-bottom: 0; }
+.msg-bubble ul, .msg-bubble ol { margin: 0.3em 0 0.45em 1.4em; padding: 0; }
+.msg-bubble li { margin-bottom: 0.2em; }
+.msg-bubble code { font-family: monospace; font-size: 0.85em; background: rgba(0,0,0,.07); padding: 1px 4px; border-radius: 3px; }
+.msg-bubble pre { background: rgba(0,0,0,.07); border-radius: 6px; padding: 0.6em 0.8em; overflow-x: auto; margin: 0.4em 0; }
+.msg-bubble pre code { background: none; padding: 0; }
+.msg-bubble h1, .msg-bubble h2, .msg-bubble h3 { font-size: 1em; font-weight: 600; margin: 0.5em 0 0.25em; }
+.msg-bubble blockquote { border-left: 3px solid var(--border); margin: 0.3em 0 0.3em 0.5em; padding-left: 0.6em; color: var(--text-3); }
+.msg-bubble table { border-collapse: collapse; width: 100%; margin: 0.4em 0; font-size: 0.85em; }
+.msg-bubble th, .msg-bubble td { border: 1px solid var(--border); padding: 0.25em 0.5em; text-align: left; }
+.msg-bubble th { background: rgba(0,0,0,.04); font-weight: 600; }
+/* Streaming block-cursor via ::after — avoids children conflict with dangerouslySetInnerHTML */
+.msg-bubble.streaming::after { content: '▋'; color: var(--accent); animation: blink 1s steps(1) infinite; }
+
 /* ── Composer ────────────────────────────────────────────────── */
 .composer-wrap {
   padding: 10px 20px 14px;
