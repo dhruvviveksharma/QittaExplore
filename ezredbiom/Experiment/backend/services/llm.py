@@ -14,48 +14,36 @@ client = OpenAI(
 )
 
 
-def llm_query_to_sql(user_query):
-    """Convert natural language query to SQL using LLM (robust, conservative)."""
-    system_prompt = """You are a SQL query generator for a microbiome study database (Qiita).
+def llm_extract_search_terms(user_query: str) -> list[str]:
+    """Extract keyword search terms from a natural language query.
 
-        Available tables and columns:
-        - s.study_id (integer)
-        - s.study_title (text)
-        - s.study_abstract (text)
-        - sp_pi.name (text) - Principal Investigator name
-        - sp_pi.email (text) - PI email
-        - sp_pi.affiliation (text) - PI institution
-        - sp_lab.name (text) - Lab person name
-        - v.visibility (text) - Values: 'public', 'private', 'sandbox', 'awaiting_approval'
+    The LLM returns only a JSON array of plain keyword strings — never SQL
+    fragments. SQL structure is assembled safely in Python (see study_service.py).
+    """
+    system_prompt = """You are a keyword extractor for a microbiome study search engine.
 
-        Your task:
-        1. Convert the user's natural language query into a PostgreSQL WHERE clause
-        2. Use ILIKE for case-insensitive text matching (e.g., field ILIKE '%keyword%')
-        3. Use parameterized queries with %s placeholders
-        4. Return ONLY a JSON object with 'where_clause' and 'params' fields
+        Your ONLY job is to extract the essential search keywords from the user's query.
 
-        Behavioural rules:
-        - If the query is clearly unrelated to microbiome or Qiita (e.g. fictional characters),
-          still produce a simple, broad ILIKE filter on study_title / study_abstract using
-          the query terms, but do NOT invent additional fields or complex logic.
-        - If you are unsure how to interpret the query, prefer a broad keyword match over
-          overly specific assumptions.
+        Rules:
+        - Return ONLY a JSON array of strings, e.g. ["soil", "gut microbiome", "Rob Knight"]
+        - Each element is a plain keyword or short phrase — no SQL, no operators, no wildcards
+        - Extract 1–5 terms that best represent what the user is searching for
+        - If the query is a person's name, return the full name as one element
+        - If the query is unrelated to microbiome, still extract the literal keywords
+        - Return [] if the query is empty or meaningless
 
         Examples:
 
         User: "Find studies about soil microbiome"
-        Response: {
-        "where_clause": "(s.study_title ILIKE %s OR s.study_abstract ILIKE %s)",
-        "params": ["%soil%", "%soil%"]
-        }
+        Response: ["soil", "microbiome"]
 
         User: "Studies by Rob Knight"
-        Response: {
-        "where_clause": "sp_pi.name ILIKE %s",
-        "params": ["%Rob Knight%"]
-        }
+        Response: ["Rob Knight"]
 
-        Return ONLY valid JSON, no other text."""
+        User: "gut bacteria in infants"
+        Response: ["gut", "bacteria", "infants"]
+
+        Return ONLY valid JSON array, no other text."""
 
     message = client.chat.completions.create(
         model="gemma3",
@@ -66,13 +54,9 @@ def llm_query_to_sql(user_query):
     )
 
     raw = message.choices[0].message.content
-    if raw is None:
-        raw = ""
     response_text = (raw or "").strip()
-    if not response_text:
-        response_text = "{}"
 
-    # Remove markdown code blocks if present
+    # Strip markdown code fences if present
     if response_text.startswith("```"):
         parts = response_text.split("```")
         response_text = parts[1] if len(parts) > 1 else response_text
@@ -82,16 +66,12 @@ def llm_query_to_sql(user_query):
 
     try:
         out = json.loads(response_text)
-        if not isinstance(out, dict) or "where_clause" not in out or "params" not in out:
-            raise ValueError("missing where_clause or params")
-        return out
+        if isinstance(out, list):
+            # Keep only string elements, discard anything else
+            return [str(t).strip() for t in out if t and str(t).strip()]
+        raise ValueError("expected JSON array")
     except (json.JSONDecodeError, ValueError):
-        print(f"Warning: Could not parse LLM response for search: {response_text}")
-        # Extract keywords from query
-        keywords = user_query.lower().replace("find", "").replace("studies", "").replace("about", "").strip()
-        if not keywords:
-            keywords = user_query.strip() or "%"
-        return {
-            "where_clause": "(s.study_title ILIKE %s OR s.study_abstract ILIKE %s)",
-            "params": [f"%{keywords}%", f"%{keywords}%"]
-        }
+        print(f"Warning: Could not parse LLM keyword response: {response_text}")
+        # Fall back to splitting the raw query on whitespace
+        words = [w.strip() for w in user_query.split() if len(w.strip()) > 2]
+        return words[:5] if words else [user_query.strip()]

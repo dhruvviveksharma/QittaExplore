@@ -1,27 +1,33 @@
 # backend/services/study_service.py
 from qiita_db.sql_connection import TRN
 
-def search_studies_with_sql(custom_sql_where="", params=None):
+def search_studies_with_sql(keywords: list = None):
+    """Search studies by keyword list using fully parameterized queries.
+
+    Each keyword is matched case-insensitively against title, abstract, and PI
+    name. All values are passed as %s parameters — no user or LLM input ever
+    touches SQL structure.
     """
-    Search studies using custom SQL WHERE clause
-    
-    Parameters
-    ----------
-    custom_sql_where : str
-        Custom WHERE clause (without the WHERE keyword)
-    params : list
-        Parameters for the SQL query
-    
-    Returns
-    -------
-    list
-        List of dictionaries with study information
-    """
-    if params is None:
+    keywords = [k for k in (keywords or []) if k and str(k).strip()]
+
+    # Build a parameterized per-keyword condition; combine with AND so all
+    # keywords must match somewhere in the study record.
+    if keywords:
+        per_keyword_clauses = []
         params = []
-    
+        for kw in keywords:
+            pattern = f"%{kw}%"
+            per_keyword_clauses.append(
+                "(s.study_title ILIKE %s OR s.study_abstract ILIKE %s OR sp_pi.name ILIKE %s)"
+            )
+            params.extend([pattern, pattern, pattern])
+        where_sql = " AND ".join(per_keyword_clauses)
+    else:
+        where_sql = "1=1"
+        params = []
+
     with TRN:
-        sql = f"""
+        sql = """
         SELECT DISTINCT s.study_id, s.study_title, s.study_abstract,
                s.study_alias, s.metadata_complete,
                sp_pi.name as pi_name, sp_pi.email as pi_email,
@@ -46,7 +52,7 @@ def search_studies_with_sql(custom_sql_where="", params=None):
         LEFT JOIN qiita.study_artifact sa ON s.study_id = sa.study_id
         LEFT JOIN qiita.artifact a ON sa.artifact_id = a.artifact_id
         LEFT JOIN qiita.visibility v ON a.visibility_id = v.visibility_id
-        WHERE {custom_sql_where if custom_sql_where else '1=1'}
+        WHERE """ + where_sql + """
         ORDER BY s.study_id
         LIMIT 50
         """
