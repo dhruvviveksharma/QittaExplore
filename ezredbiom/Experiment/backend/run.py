@@ -252,13 +252,18 @@ def _build_project_study_context(project: dict, user_id: str = "default"):
         "When referencing specific studies, ONLY use these IDs and titles:\n"
     )
 
-    # Attach cached sample context to each study dict for the LLM
+    # Attach sample context to each study dict for the LLM; fetch from Qiita if not cached
     for s in studies:
         sid = s.get("study_id")
         if sid and not s.get("samples_context"):
             cached_detail = get_study_detail_cache(sid)
             if cached_detail and cached_detail.get("samples_context"):
                 s["samples_context"] = cached_detail["samples_context"]
+            else:
+                ctx = _fetch_sample_context_text(sid)
+                if ctx:
+                    s["samples_context"] = ctx
+                    upsert_study_detail_cache(sid, None, None, samples_context=ctx)
 
     detailed_blocks = [_study_detail_block(s) for s in studies]
     full_context = header + "\n".join(detailed_blocks)
@@ -902,6 +907,16 @@ def _enrich_study_in_project(project_id: str, study_id: int):
         num_preps=num_preps,
         preps_json=preps_json,
     )
+
+    # Cache sample context text for LLM (pass None for preps/artifacts — COALESCE preserves them)
+    try:
+        cached_detail = get_study_detail_cache(study_id)
+        if not (cached_detail and cached_detail.get("samples_context")):
+            samples_ctx = _fetch_sample_context_text(study_id)
+            if samples_ctx:
+                upsert_study_detail_cache(study_id, None, None, samples_context=samples_ctx)
+    except Exception:
+        pass
 
 
 @app.route('/api/projects/<project_id>/studies', methods=['POST'])

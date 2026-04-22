@@ -836,19 +836,23 @@ def get_study_detail_cache(study_id: int):
 
 
 def upsert_study_detail_cache(study_id: int, preps_json: str, artifacts_json: str, samples_context: str = None):
-    """Cache study detail (preps + artifacts + sample context text) from Qiita."""
+    """Cache study detail (preps + artifacts + sample context text) from Qiita.
+
+    Pass None for preps_json/artifacts_json to update only samples_context without
+    overwriting existing prep/artifact data (COALESCE preserves existing values).
+    """
     with _conn() as conn:
         conn.execute(
             """
             INSERT INTO study_detail_cache(study_id, preps_json, artifacts_json, samples_context, cached_at)
             VALUES(?, ?, ?, ?, ?)
             ON CONFLICT(study_id) DO UPDATE SET
-                preps_json = excluded.preps_json,
-                artifacts_json = excluded.artifacts_json,
+                preps_json = COALESCE(excluded.preps_json, study_detail_cache.preps_json),
+                artifacts_json = COALESCE(excluded.artifacts_json, study_detail_cache.artifacts_json),
                 samples_context = COALESCE(excluded.samples_context, study_detail_cache.samples_context),
                 cached_at = excluded.cached_at
             """,
-            (int(study_id), preps_json or "[]", artifacts_json or "[]", samples_context, _now()),
+            (int(study_id), preps_json, artifacts_json, samples_context, _now()),
         )
         conn.commit()
     return True
