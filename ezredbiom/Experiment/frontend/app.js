@@ -1,121 +1,12 @@
-const { useState, useEffect, useRef, useMemo, useCallback, useContext, createContext } = React;
+const { useState, useEffect, useRef, useMemo, useCallback } = React;
 
 const API     = document.querySelector('meta[name="api-base"]')?.content
               || 'http://localhost:5001/api';
-const AUTH_API = API.replace(/\/api$/, '');
-
-// ─── Auth context ─────────────────────────────────────────────────────────────
-const AuthContext = createContext(null);
-function useAuth() { return useContext(AuthContext); }
-
-function AuthProvider({ children }) {
-  const [token, setToken] = useState(() => localStorage.getItem('qiita_token'));
-  const [user,  setUser]  = useState(() => {
-    try { return JSON.parse(localStorage.getItem('qiita_user')); } catch { return null; }
-  });
-
-  const _persist = ({ token, user }) => {
-    localStorage.setItem('qiita_token', token);
-    localStorage.setItem('qiita_user',  JSON.stringify(user));
-    setToken(token); setUser(user);
-  };
-
-  const login = async (username, password) => {
-    const res = await fetch(`${AUTH_API}/auth/login`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password }),
-    });
-    if (!res.ok) throw new Error((await res.json()).error || 'Login failed');
-    _persist(await res.json());
-  };
-
-  const register = async (username, password) => {
-    const res = await fetch(`${AUTH_API}/auth/register`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password }),
-    });
-    if (!res.ok) throw new Error((await res.json()).error || 'Registration failed');
-    _persist(await res.json());
-  };
-
-  const logout = () => {
-    localStorage.removeItem('qiita_token');
-    localStorage.removeItem('qiita_user');
-    setToken(null); setUser(null);
-  };
-
-  return React.createElement(AuthContext.Provider, { value: { token, user, login, register, logout } }, children);
-}
-
-// ─── Login / Register screen ───────────────────────────────────────────────────
-function LoginScreen() {
-  const auth = useAuth();
-  const [tab,      setTab]      = useState('login');
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [confirm,  setConfirm]  = useState('');
-  const [error,    setError]    = useState('');
-  const [loading,  setLoading]  = useState(false);
-
-  const submit = async (e) => {
-    e.preventDefault();
-    setError('');
-    if (tab === 'register' && password !== confirm) { setError('Passwords do not match'); return; }
-    setLoading(true);
-    try {
-      if (tab === 'login') await auth.login(username, password);
-      else                 await auth.register(username, password);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="login-screen">
-      <div className="login-card">
-        <div className="login-logo">Qiita Explorer</div>
-        <div className="login-tabs">
-          <button className={`login-tab${tab === 'login'    ? ' active' : ''}`} onClick={() => { setTab('login');    setError(''); }}>Sign In</button>
-          <button className={`login-tab${tab === 'register' ? ' active' : ''}`} onClick={() => { setTab('register'); setError(''); }}>Sign Up</button>
-        </div>
-        <form onSubmit={submit} className="login-form">
-          <input className="login-input" type="text"     placeholder="Username" value={username}
-            onChange={e => setUsername(e.target.value)} required autoFocus />
-          <input className="login-input" type="password" placeholder="Password" value={password}
-            onChange={e => setPassword(e.target.value)} required />
-          {tab === 'register' && (
-            <input className="login-input" type="password" placeholder="Confirm password" value={confirm}
-              onChange={e => setConfirm(e.target.value)} required />
-          )}
-          {error && <div className="login-error">{error}</div>}
-          <button className="login-submit" type="submit" disabled={loading}>
-            {loading ? 'Please wait…' : tab === 'login' ? 'Sign In' : 'Create Account'}
-          </button>
-        </form>
-      </div>
-    </div>
-  );
-}
+const USER_ID = 'default';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
-const _authHeaders = () => {
-  const token = localStorage.getItem('qiita_token');
-  return token ? { 'Authorization': `Bearer ${token}` } : {};
-};
-
-const apiFetch = (path, opts = {}) => {
-  const headers = { 'Content-Type': 'application/json', ..._authHeaders(), ...(opts.headers || {}) };
-  return fetch(`${API}${path}`, { ...opts, headers }).then(res => {
-    if (res.status === 401) {
-      localStorage.removeItem('qiita_token');
-      localStorage.removeItem('qiita_user');
-      window.location.reload();
-    }
-    return res;
-  });
-};
+const apiFetch = (path, opts = {}) =>
+  fetch(`${API}${path}`, { headers: { 'Content-Type': 'application/json' }, ...opts });
 const apiPost  = (path, body)  => apiFetch(path, { method: 'POST',   body: JSON.stringify(body) });
 const apiDel   = (path)        => apiFetch(path, { method: 'DELETE' });
 
@@ -147,8 +38,6 @@ async function parseSSE(response, { onToken, onDone, onError }, signal) {
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
 function App() {
-  const auth = useAuth();
-
   // Projects list (sidebar)
   const [projects,    setProjects]    = useState([]);
   const [projLoading, setProjLoading] = useState(true);
@@ -235,18 +124,18 @@ function App() {
   const loadProjects = async () => {
     setProjLoading(true);
     try {
-      const res = await apiFetch(`/projects`);
+      const res = await apiFetch(`/projects?user_id=${USER_ID}`);
       if (res.ok) { const d = await res.json(); setProjects(d.projects || []); }
     } finally { setProjLoading(false); }
   };
 
   const fetchProjectDetail = async (pid) => {
-    const res = await apiFetch(`/projects/${pid}`);
+    const res = await apiFetch(`/projects/${pid}?user_id=${USER_ID}`);
     if (res.ok) setOpenProject(await res.json());
   };
 
   const loadGlobalChats = async () => {
-    const res = await apiFetch(`/global-chats`);
+    const res = await apiFetch(`/global-chats?user_id=${USER_ID}`);
     if (res.ok) { const d = await res.json(); setGlobalChats(d.chats || []); }
   };
 
@@ -259,8 +148,8 @@ function App() {
   const hydrateChatCache = async (type, projId, chatId) => {
     if (chatCache[chatId]) return;
     const res = type === 'project-chat'
-      ? await apiFetch(`/projects/${projId}/chats/${chatId}`)
-      : await apiFetch(`/global-chats/${chatId}`);
+      ? await apiFetch(`/projects/${projId}/chats/${chatId}?user_id=${USER_ID}`)
+      : await apiFetch(`/global-chats/${chatId}?user_id=${USER_ID}`);
     if (res.ok) {
       const d = await res.json();
       setChatCache(prev => ({ ...prev, [chatId]: { messages: d.messages || [], title: d.title } }));
@@ -270,7 +159,7 @@ function App() {
   // ─── project actions ───────────────────────────────────────────────────────────
   const createProject = async () => {
     const name = newProjName.trim() || 'Untitled';
-    const res  = await apiPost('/projects', { name });
+    const res  = await apiPost('/projects', { user_id: USER_ID, name });
     if (!res.ok) return;
     const proj = await res.json();
     setNewProjName(''); setShowNewProj(false);
@@ -281,7 +170,7 @@ function App() {
 
   const deleteProject = async (pid) => {
     if (!confirm('Delete this project and all its chats?')) return;
-    await apiDel(`/projects/${pid}`);
+    await apiDel(`/projects/${pid}?user_id=${USER_ID}`);
     if (openProjId === pid) { setOpenProjId(null); setOpenProject(null); }
     if (view.projId === pid) setView({ type: 'browse' });
     loadProjects();
@@ -289,13 +178,13 @@ function App() {
 
   const addStudyToProject = async (study) => {
     if (!openProjId) return;
-    const res = await apiPost(`/projects/${openProjId}/studies`, { study });
+    const res = await apiPost(`/projects/${openProjId}/studies`, { user_id: USER_ID, study });
     if (res.ok) { const updated = await res.json(); setOpenProject(updated); }
   };
 
   const removeStudy = async (studyId) => {
     if (!openProjId) return;
-    const res = await apiDel(`/projects/${openProjId}/studies/${studyId}`);
+    const res = await apiDel(`/projects/${openProjId}/studies/${studyId}?user_id=${USER_ID}`);
     if (res.ok) { const updated = await res.json(); setOpenProject(updated); }
   };
 
@@ -313,7 +202,7 @@ function App() {
   };
 
   const newProjChat = async (projId) => {
-    const res = await apiPost(`/projects/${projId}/chats`, {});
+    const res = await apiPost(`/projects/${projId}/chats`, { user_id: USER_ID });
     if (!res.ok) return;
     const chat = await res.json();
     setChatCache(prev => ({ ...prev, [chat.chat_id]: { messages: [], title: 'New chat' } }));
@@ -323,14 +212,14 @@ function App() {
   };
 
   const deleteProjChat = async (projId, chatId) => {
-    await apiDel(`/projects/${projId}/chats/${chatId}`);
+    await apiDel(`/projects/${projId}/chats/${chatId}?user_id=${USER_ID}`);
     setChatCache(prev => { const n = { ...prev }; delete n[chatId]; return n; });
     if (view.chatId === chatId) setView({ type: 'project-chat', projId, chatId: null });
     setOpenProject(prev => prev ? { ...prev, chats: (prev.chats || []).filter(c => c.chat_id !== chatId) } : prev);
   };
 
   const newGlobChat = async () => {
-    const res = await apiPost('/global-chats', {});
+    const res = await apiPost('/global-chats', { user_id: USER_ID });
     if (!res.ok) return;
     const chat = await res.json();
     setChatCache(prev => ({ ...prev, [chat.chat_id]: { messages: [], title: 'New chat' } }));
@@ -340,7 +229,7 @@ function App() {
   };
 
   const deleteGlobChat = async (chatId) => {
-    await apiDel(`/global-chats/${chatId}`);
+    await apiDel(`/global-chats/${chatId}?user_id=${USER_ID}`);
     setChatCache(prev => { const n = { ...prev }; delete n[chatId]; return n; });
     if (view.chatId === chatId) setView({ type: 'global-chat', chatId: null });
     setGlobalChats(prev => prev.filter(c => c.chat_id !== chatId));
@@ -387,7 +276,7 @@ function App() {
         let { projId, chatId } = view;
         // create chat lazily if needed
         if (!chatId) {
-          const res = await apiPost(`/projects/${projId}/chats`, {});
+          const res = await apiPost(`/projects/${projId}/chats`, { user_id: USER_ID });
           if (!res.ok) throw new Error('Failed to create chat');
           const chat = await res.json();
           chatId = chat.chat_id;
@@ -396,8 +285,8 @@ function App() {
         }
         optimisticAppend(chatId, msg);
         const res = await fetch(`${API}/projects/${projId}/chats/${chatId}/message/stream`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json', ..._authHeaders() },
-          body: JSON.stringify({ message: msg }), signal: ctrl.signal,
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_id: USER_ID, message: msg }), signal: ctrl.signal,
         });
         if (!res.ok || !res.body) throw new Error('Stream failed');
         await parseSSE(res, {
@@ -417,7 +306,7 @@ function App() {
       } else if (view.type === 'global-chat') {
         let { chatId } = view;
         if (!chatId) {
-          const res = await apiPost('/global-chats', {});
+          const res = await apiPost('/global-chats', { user_id: USER_ID });
           if (!res.ok) throw new Error('Failed to create chat');
           const chat = await res.json();
           chatId = chat.chat_id;
@@ -427,8 +316,8 @@ function App() {
         }
         optimisticAppend(chatId, msg);
         const res = await fetch(`${API}/global-chats/${chatId}/message/stream`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json', ..._authHeaders() },
-          body: JSON.stringify({ message: msg, selected_studies: ctxStudies }),
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_id: USER_ID, message: msg, selected_studies: ctxStudies }),
           signal: ctrl.signal,
         });
         if (!res.ok || !res.body) throw new Error('Stream failed');
@@ -480,7 +369,7 @@ function App() {
 
   // ─── enrich all project studies from Qiita ──────────────────────────────────
   const enrichAllStudies = async (projId) => {
-    const res = await apiPost(`/projects/${projId}/studies/enrich-all`, {});
+    const res = await apiPost(`/projects/${projId}/studies/enrich-all`, { user_id: USER_ID });
     if (res.ok) { const d = await res.json(); if (d.project) setOpenProject(d.project); }
   };
 
@@ -678,10 +567,6 @@ function App() {
           {view.type === 'project-chat' && openProject?.studies?.length > 0 && (
             <span className="topbar-badge">{openProject.studies.length} sources</span>
           )}
-          <div className="topbar-user">
-            <span className="topbar-username">{auth.user?.username}</span>
-            <button className="topbar-logout" onClick={auth.logout} title="Sign out">Sign out</button>
-          </div>
         </div>
 
         {/* Content area */}
@@ -1040,12 +925,4 @@ function App() {
   );
 }
 
-function Root() {
-  const auth = useAuth();
-  if (!auth.token) return <LoginScreen />;
-  return <App />;
-}
-
-ReactDOM.createRoot(document.getElementById('root')).render(
-  <AuthProvider><Root /></AuthProvider>
-);
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);

@@ -22,8 +22,6 @@ def _conn():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 
@@ -127,15 +125,6 @@ def _create_schema(conn):
             preps_json TEXT,
             artifacts_json TEXT,
             cached_at TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS users (
-            user_id       TEXT PRIMARY KEY,
-            username      TEXT UNIQUE NOT NULL,
-            email         TEXT UNIQUE,
-            password_hash TEXT NOT NULL,
-            role          TEXT NOT NULL DEFAULT 'user',
-            created_at    TEXT
         );
 
         CREATE INDEX IF NOT EXISTS idx_projects_user_updated ON projects(user_id, updated_at DESC);
@@ -398,13 +387,24 @@ def create_project(user_id: str, name: str):
     return get_project(project_id, user_id)
 
 
-def get_project(project_id: str, user_id: str):
-    resolved_user = (user_id or "").strip() or "default"
+def get_project(project_id: str, user_id: str = None):
     with _conn() as conn:
-        row = conn.execute(
-            "SELECT project_id, user_id, name, created_at, updated_at FROM projects WHERE project_id = ? AND user_id = ?",
-            (project_id, resolved_user),
-        ).fetchone()
+        if user_id is not None:
+            resolved_user = (user_id or "").strip() or "default"
+            row = conn.execute(
+                "SELECT project_id, user_id, name, created_at, updated_at FROM projects WHERE project_id = ? AND user_id = ?",
+                (project_id, resolved_user),
+            ).fetchone()
+            if row is None:
+                row = conn.execute(
+                    "SELECT project_id, user_id, name, created_at, updated_at FROM projects WHERE project_id = ?",
+                    (project_id,),
+                ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT project_id, user_id, name, created_at, updated_at FROM projects WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
         if row is None:
             return None
         project = _as_dict(row)
@@ -844,65 +844,3 @@ def upsert_study_detail_cache(study_id: int, preps_json: str, artifacts_json: st
         )
         conn.commit()
     return True
-
-
-# ---------------------------------------------------------------------------
-# Auth / user management
-# ---------------------------------------------------------------------------
-
-def create_user(username: str, email, password_hash: str, role: str = "user") -> dict:
-    """Insert a new user. Raises ValueError if username already exists."""
-    user_id = str(uuid.uuid4())
-    now = _now()
-    with _conn() as conn:
-        try:
-            conn.execute(
-                """
-                INSERT INTO users(user_id, username, email, password_hash, role, created_at)
-                VALUES(?, ?, ?, ?, ?, ?)
-                """,
-                (user_id, username.strip(), email, password_hash, role, now),
-            )
-            conn.commit()
-        except Exception as exc:
-            if "UNIQUE constraint failed" in str(exc):
-                raise ValueError(f"Username '{username}' already exists") from exc
-            raise
-    return {"user_id": user_id, "username": username.strip(), "email": email, "role": role, "created_at": now}
-
-
-def get_user_by_username(username: str):
-    """Return user dict or None."""
-    with _conn() as conn:
-        row = conn.execute(
-            "SELECT * FROM users WHERE username = ?", (username.strip(),)
-        ).fetchone()
-    return _as_dict(row)
-
-
-def get_user_by_id(user_id: str):
-    """Return user dict or None."""
-    with _conn() as conn:
-        row = conn.execute(
-            "SELECT * FROM users WHERE user_id = ?", (user_id,)
-        ).fetchone()
-    return _as_dict(row)
-
-
-def update_user_password(user_id: str, new_password_hash: str):
-    """Replace the password hash for a user."""
-    with _conn() as conn:
-        conn.execute(
-            "UPDATE users SET password_hash = ? WHERE user_id = ?",
-            (new_password_hash, user_id),
-        )
-        conn.commit()
-
-
-def list_users() -> list:
-    """Return all users (without password_hash)."""
-    with _conn() as conn:
-        rows = conn.execute(
-            "SELECT user_id, username, email, role, created_at FROM users ORDER BY created_at"
-        ).fetchall()
-    return [dict(r) for r in rows]

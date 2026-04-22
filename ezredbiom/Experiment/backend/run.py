@@ -1,5 +1,5 @@
 # backend/run.py
-from flask import Flask, Response, g, jsonify, request, stream_with_context
+from flask import Flask, Response, jsonify, request, stream_with_context
 from flask_cors import CORS
 from openai import OpenAI
 from qiita_db.sql_connection import TRN
@@ -8,16 +8,9 @@ from dotenv import load_dotenv
 import os
 from concurrent.futures import ThreadPoolExecutor
 
-from services.llm import llm_extract_search_terms
+from services.llm import llm_query_to_sql
 from services.study_service import search_studies_with_sql
 
-from auth import (
-    check_password,
-    create_token,
-    hash_password,
-    require_admin,
-    require_auth,
-)
 from store import (
     add_study_to_project,
     append_chat_messages,
@@ -25,7 +18,6 @@ from store import (
     create_chat,
     create_global_chat,
     create_project,
-    create_user,
     delete_chat,
     delete_global_chat,
     delete_project,
@@ -34,16 +26,12 @@ from store import (
     get_project,
     get_project_context_summary,
     get_study_detail_cache,
-    get_user_by_id,
-    get_user_by_username,
     list_chats,
     list_global_chats,
     list_projects,
-    list_users,
     remove_study_from_project,
     update_project,
     update_project_study_data,
-    update_user_password,
     upsert_project_context_summary,
     upsert_project_study_summary,
     upsert_study_detail_cache,
@@ -53,13 +41,7 @@ load_dotenv()
 API_KEY = os.getenv("API_KEY")
 
 app = Flask(__name__)
-_CORS_ORIGINS = [
-    o.strip()
-    for o in os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")
-    if o.strip()
-]
-CORS(app, origins=_CORS_ORIGINS, supports_credentials=True,
-     allow_headers=["Content-Type", "Authorization"])
+CORS(app)
 
 client = OpenAI(
     api_key=API_KEY,
@@ -110,94 +92,6 @@ When answering:
 - Format all responses using Markdown (bold, bullets, code blocks, headers where appropriate).
 - Be concise about individual studies; prioritize breadth over depth unless asked to go deep on one study.
 - Do not output SQL or code unless the user explicitly asks for it."""
-
-
-def _seed_admin():
-    """Create the initial admin account on first boot (race-safe via UNIQUE constraint)."""
-    admin_user = os.environ.get("ADMIN_USER", "admin")
-    admin_pass = os.environ.get("ADMIN_PASS", "")
-    if not admin_pass:
-        print("[auth] WARNING: ADMIN_PASS not set — skipping admin seed")
-        return
-    try:
-        create_user(admin_user, email=None, password_hash=hash_password(admin_pass), role="admin")
-        print(f"[auth] Created admin user: {admin_user}")
-    except ValueError:
-        pass  # already exists
-
-
-_seed_admin()
-
-
-# ---------------------------------------------------------------------------
-# Auth routes
-# ---------------------------------------------------------------------------
-
-@app.route("/auth/login", methods=["POST"])
-def auth_login():
-    data = request.get_json() or {}
-    username = (data.get("username") or "").strip()
-    password = data.get("password") or ""
-    if not username or not password:
-        return jsonify({"error": "username and password required"}), 400
-    user = get_user_by_username(username)
-    if not user or not check_password(password, user["password_hash"]):
-        return jsonify({"error": "Invalid username or password"}), 401
-    token = create_token(user["user_id"], user["username"], user["role"])
-    return jsonify({
-        "token": token,
-        "user": {"user_id": user["user_id"], "username": user["username"], "role": user["role"]},
-    })
-
-
-@app.route("/auth/register", methods=["POST"])
-def auth_register():
-    data = request.get_json() or {}
-    username = (data.get("username") or "").strip()
-    password = data.get("password") or ""
-    email = (data.get("email") or "").strip() or None
-    if not username or not password:
-        return jsonify({"error": "username and password required"}), 400
-    if len(password) < 6:
-        return jsonify({"error": "Password must be at least 6 characters"}), 400
-    try:
-        user = create_user(username, email=email, password_hash=hash_password(password), role="user")
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 409
-    token = create_token(user["user_id"], user["username"], user["role"])
-    return jsonify({
-        "token": token,
-        "user": {"user_id": user["user_id"], "username": user["username"], "role": user["role"]},
-    }), 201
-
-
-@app.route("/auth/me", methods=["GET"])
-@require_auth
-def auth_me():
-    return jsonify({"user_id": g.user_id, "username": g.username, "role": g.user_role})
-
-
-@app.route("/auth/change-password", methods=["POST"])
-@require_auth
-def auth_change_password():
-    data = request.get_json() or {}
-    current = data.get("current_password") or ""
-    new_pw = data.get("new_password") or ""
-    if not current or not new_pw:
-        return jsonify({"error": "current_password and new_password required"}), 400
-    if len(new_pw) < 6:
-        return jsonify({"error": "New password must be at least 6 characters"}), 400
-    user = get_user_by_id(g.user_id)
-    if not user or not check_password(current, user["password_hash"]):
-        return jsonify({"error": "Current password is incorrect"}), 401
-    update_user_password(g.user_id, hash_password(new_pw))
-    return jsonify({"ok": True})
-
-
-@app.route("/auth/users", methods=["GET"])
-@require_admin
-def auth_list_users():
-    return jsonify({"users": list_users()})
 
 
 def _sse(event: str, payload: dict):
@@ -727,7 +621,6 @@ def _fetch_study_detail_from_qiita(study_id: int):
 
 
 @app.route('/api/studies/<int:study_id>/detail', methods=['GET'])
-@require_auth
 def api_study_detail(study_id):
     """Return prep templates, artifacts, and samples for a study, with SQLite caching for preps/artifacts."""
     # --- preps + artifacts (cached) ---
@@ -765,7 +658,6 @@ def api_study_detail(study_id):
 
 
 @app.route('/api/studies/<int:study_id>/samples/<path:sample_id>', methods=['GET'])
-@require_auth
 def api_sample_detail(study_id, sample_id):
     """Return all metadata fields for a single sample from qiita.sample_{study_id}."""
     try:
@@ -787,7 +679,6 @@ def api_sample_detail(study_id, sample_id):
 
 
 @app.route('/api/search', methods=['POST'])
-@require_auth
 def search():
     try:
         data = request.get_json() or {}
@@ -796,12 +687,14 @@ def search():
         if not user_query:
             return jsonify({'error': 'Query is required'}), 400
 
-        keywords = llm_extract_search_terms(user_query)
-        results = search_studies_with_sql(keywords=keywords)
+        sql_query = llm_query_to_sql(user_query)
+        where_clause = sql_query.get('where_clause') or '1=1'
+        params = sql_query.get('params') if isinstance(sql_query.get('params'), list) else []
+        results = search_studies_with_sql(custom_sql_where=where_clause, params=params)
 
         return jsonify({
             'results': results if isinstance(results, list) else [],
-            'keywords': keywords,
+            'sql_query': sql_query,
             'count': len(results) if isinstance(results, list) else 0
         })
     except Exception as e:
@@ -816,7 +709,6 @@ def health():
 
 
 @app.route('/api/studies/first', methods=['GET'])
-@require_auth
 def api_first_studies():
     try:
         limit = request.args.get('limit', 20)
@@ -835,46 +727,50 @@ def api_first_studies():
 # --- Projects API ---
 
 @app.route('/api/projects', methods=['GET'])
-@require_auth
 def api_list_projects():
-    return jsonify({'projects': list_projects(g.user_id)})
+    user_id = request.args.get('user_id') or 'default'
+    return jsonify({'projects': list_projects(user_id)})
 
 
 @app.route('/api/projects', methods=['POST'])
-@require_auth
 def api_create_project():
     data = request.get_json() or {}
+    user_id = (data.get('user_id') or 'default').strip() or 'default'
     name = (data.get('name') or 'Untitled').strip() or 'Untitled'
-    proj = create_project(g.user_id, name)
+    proj = create_project(user_id, name)
     if not proj:
         return jsonify({'error': 'Failed to create project'}), 500
     return jsonify(proj)
 
 
 @app.route('/api/projects/<project_id>', methods=['GET'])
-@require_auth
 def api_get_project(project_id):
-    proj = get_project(project_id, g.user_id)
+    user_id = request.args.get('user_id') or 'default'
+    proj = get_project(project_id, user_id)
     if not proj:
         return jsonify({'error': 'Project not found'}), 404
     return jsonify(proj)
 
 
 @app.route('/api/projects/<project_id>', methods=['PATCH'])
-@require_auth
 def api_update_project(project_id):
     data = request.get_json() or {}
+    user_id = (data.get('user_id') or 'default').strip() or 'default'
     name = data.get('name')
-    proj = update_project(project_id, g.user_id, name=name)
+    proj = update_project(project_id, user_id, name=name)
     if not proj:
         return jsonify({'error': 'Project not found'}), 404
     return jsonify(proj)
 
 
 @app.route('/api/projects/<project_id>', methods=['DELETE'])
-@require_auth
 def api_delete_project(project_id):
-    delete_project(project_id, g.user_id)
+    user_id = (
+        request.args.get('user_id')
+        or (request.get_json(silent=True) or {}).get('user_id')
+        or 'default'
+    )
+    delete_project(project_id, user_id)
     return jsonify({'ok': True})
 
 
@@ -928,14 +824,14 @@ def _enrich_study_in_project(project_id: str, study_id: int):
 
 
 @app.route('/api/projects/<project_id>/studies', methods=['POST'])
-@require_auth
 def api_add_study(project_id):
     data = request.get_json() or {}
+    user_id = (data.get('user_id') or 'default').strip() or 'default'
     study = data.get('study')
     if not study or study.get('study_id') is None:
         return jsonify({'error': 'study with study_id required'}), 400
 
-    proj = add_study_to_project(project_id, g.user_id, study)
+    proj = add_study_to_project(project_id, user_id, study)
     if not proj:
         return jsonify({'error': 'Project not found'}), 404
 
@@ -947,10 +843,11 @@ def api_add_study(project_id):
 
 
 @app.route('/api/projects/<project_id>/studies/enrich-all', methods=['POST'])
-@require_auth
 def api_enrich_all_studies(project_id):
     """Re-fetch enriched data (num_samples, data_types, preps) for all studies in a project."""
-    proj = get_project(project_id, g.user_id)
+    data = request.get_json(silent=True) or {}
+    user_id = (data.get('user_id') or 'default').strip() or 'default'
+    proj = get_project(project_id, user_id)
     if not proj:
         return jsonify({'error': 'Project not found'}), 404
 
@@ -968,33 +865,32 @@ def api_enrich_all_studies(project_id):
         except Exception:
             pass
 
-    updated = get_project(project_id, g.user_id)
+    updated = get_project(project_id, user_id)
     return jsonify({'ok': True, 'updated': len(futures), 'project': updated})
 
 
 @app.route('/api/projects/<project_id>/studies/<int:study_id>', methods=['DELETE'])
-@require_auth
 def api_remove_study(project_id, study_id):
-    proj = remove_study_from_project(project_id, g.user_id, study_id)
+    user_id = request.args.get('user_id') or 'default'
+    proj = remove_study_from_project(project_id, user_id, study_id)
     if proj is None:
         return jsonify({'error': 'Project not found'}), 404
     return jsonify(proj)
 
 
 @app.route('/api/projects/<project_id>/summaries/rebuild', methods=['POST'])
-@require_auth
 def api_rebuild_project_summaries(project_id):
-    proj = get_project(project_id, g.user_id)
+    data = request.get_json(silent=True) or {}
+    user_id = (data.get('user_id') or request.args.get('user_id') or 'default').strip() or 'default'
+    proj = get_project(project_id, user_id)
     if not proj:
         return jsonify({'error': 'Project not found'}), 404
 
     studies = proj.get('studies') or []
 
-    _uid = g.user_id
-
     def _rebuild_one(study):
         summary = _generate_study_summary(study)
-        upsert_project_study_summary(project_id, _uid, study.get('study_id'), summary)
+        upsert_project_study_summary(project_id, user_id, study.get('study_id'), summary)
         return True
 
     with ThreadPoolExecutor() as pool:
@@ -1003,7 +899,7 @@ def api_rebuild_project_summaries(project_id):
     project_summary = _generate_project_summary(studies)
     upsert_project_context_summary(
         project_id,
-        _uid,
+        user_id,
         project_summary,
         source_updated_at=proj.get('updated_at'),
     )
@@ -1017,81 +913,80 @@ def api_rebuild_project_summaries(project_id):
 # --- Project Chats API ---
 
 @app.route('/api/projects/<project_id>/chats', methods=['GET'])
-@require_auth
 def api_list_chats(project_id):
-    chats = list_chats(project_id, g.user_id)
+    user_id = request.args.get('user_id') or 'default'
+    chats = list_chats(project_id, user_id)
     return jsonify({'chats': chats})
 
 
 @app.route('/api/projects/<project_id>/chats', methods=['POST'])
-@require_auth
 def api_create_chat(project_id):
     data = request.get_json() or {}
-    proj = get_project(project_id, g.user_id)
+    user_id = (data.get('user_id') or 'default').strip() or 'default'
+    proj = get_project(project_id, user_id)
     if not proj:
         return jsonify({'error': 'Project not found'}), 404
     first_message = (data.get('message') or data.get('first_message') or '').strip()
-    chat = create_chat(project_id, g.user_id, first_message or data.get('title'))
+    chat = create_chat(project_id, user_id, first_message or data.get('title'))
     if first_message:
-        study_ctx = _build_project_study_context(proj, user_id=g.user_id)
+        study_ctx = _build_project_study_context(proj, user_id=user_id)
         assistant_content = llm_chat([{"role": "user", "content": first_message}], study_context_text=study_ctx)
-        append_chat_messages(project_id, g.user_id, chat["chat_id"], first_message, assistant_content)
-        chat = get_chat(project_id, g.user_id, chat["chat_id"])
+        append_chat_messages(project_id, user_id, chat["chat_id"], first_message, assistant_content)
+        chat = get_chat(project_id, user_id, chat["chat_id"])
     return jsonify(chat)
 
 
 @app.route('/api/projects/<project_id>/chats/<chat_id>', methods=['GET'])
-@require_auth
 def api_get_chat(project_id, chat_id):
-    chat = get_chat(project_id, g.user_id, chat_id)
+    user_id = request.args.get('user_id') or 'default'
+    chat = get_chat(project_id, user_id, chat_id)
     if not chat:
         return jsonify({'error': 'Chat not found'}), 404
     return jsonify(chat)
 
 
 @app.route('/api/projects/<project_id>/chats/<chat_id>', methods=['DELETE'])
-@require_auth
 def api_delete_chat(project_id, chat_id):
-    delete_chat(project_id, g.user_id, chat_id)
+    user_id = request.args.get('user_id') or 'default'
+    delete_chat(project_id, user_id, chat_id)
     return jsonify({'ok': True})
 
 
 @app.route('/api/projects/<project_id>/chats/<chat_id>/message', methods=['POST'])
-@require_auth
 def api_chat_message(project_id, chat_id):
     data = request.get_json() or {}
+    user_id = (data.get('user_id') or 'default').strip() or 'default'
     user_content = (data.get('message') or data.get('content') or '').strip()
     if not user_content:
         return jsonify({'error': 'message required'}), 400
-    chat = get_chat(project_id, g.user_id, chat_id)
+    chat = get_chat(project_id, user_id, chat_id)
     if not chat:
         return jsonify({'error': 'Chat not found'}), 404
-    proj = get_project(project_id, g.user_id)
-    study_ctx = _build_project_study_context(proj, user_id=g.user_id)
+    proj = get_project(project_id, user_id)
+    study_ctx = _build_project_study_context(proj, user_id=user_id)
     messages = chat.get('messages') or []
     full_messages = [{"role": m.get("role"), "content": m.get("content")} for m in messages]
     full_messages.append({"role": "user", "content": user_content})
     assistant_content = llm_chat(full_messages, study_context_text=study_ctx)
-    append_chat_messages(project_id, g.user_id, chat_id, user_content, assistant_content)
-    updated = get_chat(project_id, g.user_id, chat_id)
+    append_chat_messages(project_id, user_id, chat_id, user_content, assistant_content)
+    updated = get_chat(project_id, user_id, chat_id)
     return jsonify(updated)
 
 
 @app.route('/api/projects/<project_id>/chats/<chat_id>/message/stream', methods=['POST'])
-@require_auth
 def api_chat_message_stream(project_id, chat_id):
     data = request.get_json() or {}
+    user_id = (data.get('user_id') or 'default').strip() or 'default'
     user_content = (data.get('message') or data.get('content') or '').strip()
     if not user_content:
         return jsonify({'error': 'message required'}), 400
 
-    uid = g.user_id
-    chat = get_chat(project_id, uid, chat_id)
+    chat = get_chat(project_id, user_id, chat_id)
     if not chat:
         return jsonify({'error': 'Chat not found'}), 404
 
-    proj = get_project(project_id, uid)
-    study_ctx = _build_project_study_context(proj, user_id=uid)
+    proj = get_project(project_id, user_id)
+    study_ctx = _build_project_study_context(proj, user_id=user_id)
     messages = chat.get('messages') or []
     full_messages = [{"role": m.get("role"), "content": m.get("content")} for m in messages]
     full_messages.append({"role": "user", "content": user_content})
@@ -1103,7 +998,7 @@ def api_chat_message_stream(project_id, chat_id):
                 assistant_parts.append(token)
                 yield _sse("token", {"token": token})
             assistant_content = "".join(assistant_parts).strip()
-            append_chat_messages(project_id, uid, chat_id, user_content, assistant_content)
+            append_chat_messages(project_id, user_id, chat_id, user_content, assistant_content)
             yield _sse("done", {"chat_id": chat_id, "persisted": True})
         except Exception as e:
             yield _sse("error", {"error": str(e)})
@@ -1116,23 +1011,22 @@ def api_chat_message_stream(project_id, chat_id):
 
 
 @app.route('/api/projects/<project_id>/chats/stream', methods=['POST'])
-@require_auth
 def api_create_chat_stream(project_id):
     data = request.get_json() or {}
+    user_id = (data.get('user_id') or 'default').strip() or 'default'
     user_content = (data.get('message') or data.get('content') or '').strip()
     if not user_content:
         return jsonify({'error': 'message required'}), 400
 
-    uid = g.user_id
-    proj = get_project(project_id, uid)
+    proj = get_project(project_id, user_id)
     if not proj:
         return jsonify({'error': 'Project not found'}), 404
 
-    chat = create_chat(project_id, uid, user_content)
+    chat = create_chat(project_id, user_id, user_content)
     if not chat:
         return jsonify({'error': 'Failed to create chat'}), 500
 
-    study_ctx = _build_project_study_context(proj, user_id=uid)
+    study_ctx = _build_project_study_context(proj, user_id=user_id)
 
     def generate():
         assistant_parts = []
@@ -1141,7 +1035,7 @@ def api_create_chat_stream(project_id):
                 assistant_parts.append(token)
                 yield _sse("token", {"token": token, "chat_id": chat["chat_id"]})
             assistant_content = "".join(assistant_parts).strip()
-            append_chat_messages(project_id, uid, chat["chat_id"], user_content, assistant_content)
+            append_chat_messages(project_id, user_id, chat["chat_id"], user_content, assistant_content)
             yield _sse("done", {"chat_id": chat["chat_id"], "persisted": True})
         except Exception as e:
             yield _sse("error", {"error": str(e), "chat_id": chat["chat_id"]})
@@ -1156,48 +1050,47 @@ def api_create_chat_stream(project_id):
 # --- Global Chats API ---
 
 @app.route('/api/global-chats', methods=['GET'])
-@require_auth
 def api_list_global_chats():
-    return jsonify({'chats': list_global_chats(g.user_id)})
+    user_id = request.args.get('user_id') or 'default'
+    return jsonify({'chats': list_global_chats(user_id)})
 
 
 @app.route('/api/global-chats', methods=['POST'])
-@require_auth
 def api_create_global_chat():
     data = request.get_json() or {}
+    user_id = (data.get('user_id') or 'default').strip() or 'default'
     title = data.get('title')
-    chat = create_global_chat(g.user_id, title=title)
+    chat = create_global_chat(user_id, title=title)
     if not chat:
         return jsonify({'error': 'Failed to create global chat'}), 500
     return jsonify(chat)
 
 
 @app.route('/api/global-chats/<chat_id>', methods=['GET'])
-@require_auth
 def api_get_global_chat(chat_id):
-    chat = get_global_chat(g.user_id, chat_id)
+    user_id = request.args.get('user_id') or 'default'
+    chat = get_global_chat(user_id, chat_id)
     if not chat:
         return jsonify({'error': 'Chat not found'}), 404
     return jsonify(chat)
 
 
 @app.route('/api/global-chats/<chat_id>', methods=['DELETE'])
-@require_auth
 def api_delete_global_chat(chat_id):
-    delete_global_chat(g.user_id, chat_id)
+    user_id = request.args.get('user_id') or 'default'
+    delete_global_chat(user_id, chat_id)
     return jsonify({'ok': True})
 
 
 @app.route('/api/global-chats/<chat_id>/message/stream', methods=['POST'])
-@require_auth
 def api_global_chat_message_stream(chat_id):
     data = request.get_json() or {}
+    user_id = (data.get('user_id') or 'default').strip() or 'default'
     user_content = (data.get('message') or data.get('content') or '').strip()
     if not user_content:
         return jsonify({'error': 'message required'}), 400
 
-    uid = g.user_id
-    chat = get_global_chat(uid, chat_id)
+    chat = get_global_chat(user_id, chat_id)
     if not chat:
         return jsonify({'error': 'Chat not found'}), 404
 
@@ -1227,7 +1120,7 @@ def api_global_chat_message_stream(chat_id):
                 assistant_parts.append(token)
                 yield _sse("token", {"token": token})
             assistant_content = "".join(assistant_parts).strip()
-            append_global_chat_messages(uid, chat_id, user_content, assistant_content)
+            append_global_chat_messages(user_id, chat_id, user_content, assistant_content)
             yield _sse("done", {"chat_id": chat_id, "persisted": True})
         except Exception as e:
             yield _sse("error", {"error": str(e)})
