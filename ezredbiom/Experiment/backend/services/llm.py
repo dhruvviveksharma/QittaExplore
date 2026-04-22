@@ -58,7 +58,7 @@ def llm_query_to_sql(user_query):
         Return ONLY valid JSON, no other text."""
 
     message = client.chat.completions.create(
-        model="gemma3",
+        model="qwen3",
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_query}

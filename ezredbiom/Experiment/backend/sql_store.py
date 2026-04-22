@@ -124,6 +124,7 @@ def _create_schema(conn):
             study_id INTEGER PRIMARY KEY,
             preps_json TEXT,
             artifacts_json TEXT,
+            samples_context TEXT,
             cached_at TEXT
         );
 
@@ -144,6 +145,12 @@ def _create_schema(conn):
             conn.execute(f"ALTER TABLE project_studies ADD COLUMN {col} {definition}")
         except Exception:
             pass  # column already exists
+
+    # Migrate study_detail_cache to add samples_context if it doesn't exist
+    try:
+        conn.execute("ALTER TABLE study_detail_cache ADD COLUMN samples_context TEXT")
+    except Exception:
+        pass  # column already exists
 
 
 def _mark_migration(conn):
@@ -811,7 +818,7 @@ def get_study_detail_cache(study_id: int):
     """Return cached study detail if it exists and is less than TTL hours old, else None."""
     with _conn() as conn:
         row = conn.execute(
-            "SELECT preps_json, artifacts_json, cached_at FROM study_detail_cache WHERE study_id = ?",
+            "SELECT preps_json, artifacts_json, samples_context, cached_at FROM study_detail_cache WHERE study_id = ?",
             (int(study_id),),
         ).fetchone()
     if row is None:
@@ -828,19 +835,20 @@ def get_study_detail_cache(study_id: int):
     return _as_dict(row)
 
 
-def upsert_study_detail_cache(study_id: int, preps_json: str, artifacts_json: str):
-    """Cache study detail (preps + artifacts) from Qiita."""
+def upsert_study_detail_cache(study_id: int, preps_json: str, artifacts_json: str, samples_context: str = None):
+    """Cache study detail (preps + artifacts + sample context text) from Qiita."""
     with _conn() as conn:
         conn.execute(
             """
-            INSERT INTO study_detail_cache(study_id, preps_json, artifacts_json, cached_at)
-            VALUES(?, ?, ?, ?)
+            INSERT INTO study_detail_cache(study_id, preps_json, artifacts_json, samples_context, cached_at)
+            VALUES(?, ?, ?, ?, ?)
             ON CONFLICT(study_id) DO UPDATE SET
                 preps_json = excluded.preps_json,
                 artifacts_json = excluded.artifacts_json,
+                samples_context = COALESCE(excluded.samples_context, study_detail_cache.samples_context),
                 cached_at = excluded.cached_at
             """,
-            (int(study_id), preps_json or "[]", artifacts_json or "[]", _now()),
+            (int(study_id), preps_json or "[]", artifacts_json or "[]", samples_context, _now()),
         )
         conn.commit()
     return True

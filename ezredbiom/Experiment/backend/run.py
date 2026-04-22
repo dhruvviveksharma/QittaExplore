@@ -123,7 +123,7 @@ _STUDY_BLOCK_SKIP_KEYS = {
     "study_id", "study_title", "study_abstract", "pi_name", "pi_email",
     "pi_affiliation", "lab_person_name", "summary_text", "added_at", "updated_at",
     "study_alias", "metadata_complete", "data_types", "num_samples", "num_preps",
-    "preps_json",
+    "preps_json", "samples_context",
 }
 
 
@@ -171,6 +171,8 @@ def _study_detail_block(study: dict):
             continue
         extra_lines.append(f"  {key}: {val}")
 
+    samples_context = (study.get("samples_context") or "").strip()
+
     return (
         f"- ID {sid}: {title}\n"
         f"  Abstract: {abstract}\n"
@@ -180,6 +182,7 @@ def _study_detail_block(study: dict):
         f"  Lab Contact: {lab_person_name}"
         + (f"\n{chr(10).join(enriched_lines)}" if enriched_lines else "")
         + (f"\n{chr(10).join(extra_lines)}" if extra_lines else "")
+        + (f"\n{samples_context}" if samples_context else "")
     )
 
 
@@ -201,7 +204,7 @@ def _study_seed_text(study: dict):
 def _summarize_text(prompt: str, fallback: str):
     try:
         r = client.chat.completions.create(
-            model="gemma3",
+            model="qwen3",
             messages=[
                 {"role": "system", "content": "Summarize provided study metadata for retrieval context. Be factual and concise. Do not invent details."},
                 {"role": "user", "content": prompt},
@@ -248,6 +251,14 @@ def _build_project_study_context(project: dict, user_id: str = "default"):
         "You have access to the following saved Qiita studies in this project. "
         "When referencing specific studies, ONLY use these IDs and titles:\n"
     )
+
+    # Attach cached sample context to each study dict for the LLM
+    for s in studies:
+        sid = s.get("study_id")
+        if sid and not s.get("samples_context"):
+            cached_detail = get_study_detail_cache(sid)
+            if cached_detail and cached_detail.get("samples_context"):
+                s["samples_context"] = cached_detail["samples_context"]
 
     detailed_blocks = [_study_detail_block(s) for s in studies]
     full_context = header + "\n".join(detailed_blocks)
@@ -383,14 +394,14 @@ def _build_global_search_context(studies, user_query: str):
 
 def llm_chat(messages, study_context_text: str, system_prompt: str = None):
     r = client.chat.completions.create(
-        model="gemma3", messages=_build_api_messages(messages, study_context_text, system_prompt)
+        model="qwen3", messages=_build_api_messages(messages, study_context_text, system_prompt)
     )
     return (r.choices[0].message.content or "").strip()
 
 
 def llm_chat_stream(messages, study_context_text: str, system_prompt: str = None):
     stream = client.chat.completions.create(
-        model="gemma3",
+        model="qwen3",
         messages=_build_api_messages(messages, study_context_text, system_prompt),
         stream=True,
     )
@@ -543,6 +554,65 @@ def _fetch_prep_metadata_summary(prep_template_id: int):
     return {}
 
 
+def _build_samples_context_text(samples_with_values: list, total: int, max_chars: int = 3500) -> str:
+    """Format sample metadata dicts into a compact LLM-readable text block."""
+    if not samples_with_values:
+        return ""
+    _skip = {"qiita_study_id"}
+    lines = [f"  Samples ({total} total, showing {len(samples_with_values)}):"]
+    for s in samples_with_values:
+        sid = s.get("sample_id", "?")
+        fields = s.get("fields") or {}
+        parts = []
+        for k, v in sorted(fields.items()):
+            if k in _skip or v is None:
+                continue
+            val = str(v).strip()
+            if not val or val.lower() in ("none", "null", "nan", "not applicable", "not provided"):
+                continue
+            parts.append(f"{k}={_truncate(val, 60)}")
+        lines.append(f"    {sid}: " + ", ".join(parts))
+    text = "\n".join(lines)
+    if len(text) > max_chars:
+        text = text[: max_chars - 3] + "..."
+    return text
+
+
+def _fetch_sample_context_text(study_id: int, max_chars: int = 3500) -> str:
+    """Fetch all sample metadata fields from Qiita and return compact context text."""
+    study_id = int(study_id)
+    try:
+        with TRN:
+            TRN.add(
+                "SELECT COUNT(*) FROM qiita.study_sample WHERE study_id = %s",
+                [study_id],
+            )
+            cnt = TRN.execute_fetchindex()
+        total = cnt[0][0] if cnt else 0
+    except Exception:
+        return ""
+
+    try:
+        with TRN:
+            TRN.add(
+                f"""
+                SELECT ss.sample_id, sm.sample_values
+                FROM qiita.study_sample ss
+                JOIN qiita.sample_{study_id} sm ON ss.sample_id = sm.sample_id
+                WHERE ss.study_id = %s
+                  AND ss.sample_id <> 'qiita_sample_column_names'
+                ORDER BY ss.sample_id
+                LIMIT 200
+                """,
+                [study_id],
+            )
+            rows = TRN.execute_fetchindex()
+        samples = [{"sample_id": r[0], "fields": dict(r[1])} for r in (rows or [])]
+        return _build_samples_context_text(samples, total, max_chars=max_chars)
+    except Exception:
+        return ""
+
+
 def _fetch_study_detail_from_qiita(study_id: int):
     """Run prep.sql and artifacts.sql queries for a study and return (preps, artifacts)."""
     preps = []
@@ -646,6 +716,17 @@ def api_study_detail(study_id):
 
     # --- samples (always fetched fresh — not cached, can be large) ---
     samples, total_samples = _fetch_study_samples(study_id, limit=200)
+
+    # Cache sample context text for LLM if not already present
+    if not (cached and cached.get("samples_context")):
+        samples_ctx = _fetch_sample_context_text(study_id)
+        if samples_ctx:
+            upsert_study_detail_cache(
+                study_id,
+                json.dumps(preps),
+                json.dumps(artifacts),
+                samples_context=samples_ctx,
+            )
 
     return jsonify({
         "study_id": study_id,
