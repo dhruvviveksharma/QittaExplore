@@ -464,6 +464,37 @@ input, textarea { font-family: var(--sans); }
 .composer-send:disabled { opacity: .35; cursor: not-allowed; }
 .composer-error { max-width: 720px; margin: 5px auto 0; font-size: 12px; color: var(--accent); text-align: center; }
 
+.composer-pins {
+  max-width: 720px;
+  margin: 0 auto 6px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.composer-pins-label { color: var(--text-3); margin-right: 2px; }
+.composer-pin-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text);
+}
+.composer-pin-x {
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.composer-pin-x:hover { color: var(--accent); }
+
 /* ── Browse panel ────────────────────────────────────────────── */
 .browse-panel {
   max-width: 860px;

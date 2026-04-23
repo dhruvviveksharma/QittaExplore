@@ -152,7 +152,7 @@ function App() {
       : await apiFetch(`/global-chats/${chatId}?user_id=${USER_ID}`);
     if (res.ok) {
       const d = await res.json();
-      setChatCache(prev => ({ ...prev, [chatId]: { messages: d.messages || [], title: d.title } }));
+      setChatCache(prev => ({ ...prev, [chatId]: { messages: d.messages || [], title: d.title, pinnedStudies: d.pinned_studies || [] } }));
     }
   };
 
@@ -261,6 +261,21 @@ function App() {
       };
     });
 
+  const unpinStudy = async (chatId, studyId) => {
+    setChatCache(prev => {
+      const cur = prev[chatId];
+      if (!cur) return prev;
+      return { ...prev, [chatId]: { ...cur, pinnedStudies: (cur.pinnedStudies || []).filter(id => id !== studyId) } };
+    });
+    try {
+      if (view.type === 'project-chat' && view.projId) {
+        await apiDel(`/projects/${view.projId}/chats/${chatId}/pinned/${studyId}?user_id=${USER_ID}`);
+      } else if (view.type === 'global-chat') {
+        await apiDel(`/global-chats/${chatId}/pinned/${studyId}?user_id=${USER_ID}`);
+      }
+    } catch (_) { /* optimistic — ignore */ }
+  };
+
   // ─── send ──────────────────────────────────────────────────────────────────────
   const sendMessage = async () => {
     const msg = input.trim();
@@ -303,7 +318,14 @@ function App() {
           onDone: () => {
             patchLast(chatId, m => ({ ...m, isStreaming: false }));
             const title = displayMsg.slice(0, 60);
-            setChatCache(prev => ({ ...prev, [chatId]: { ...(prev[chatId]||{}), title } }));
+            setChatCache(prev => {
+              const cur = prev[chatId] || {};
+              const pins = cur.pinnedStudies || [];
+              const nextPins = (reportStudyId != null && !pins.includes(reportStudyId))
+                ? [...pins, reportStudyId]
+                : pins;
+              return { ...prev, [chatId]: { ...cur, title, pinnedStudies: nextPins } };
+            });
             setOpenProject(prev => prev ? {
               ...prev,
               chats: (prev.chats||[]).map(c => c.chat_id === chatId ? { ...c, title } : c)
@@ -340,7 +362,14 @@ function App() {
           onDone: () => {
             patchLast(chatId, m => ({ ...m, isStreaming: false }));
             const title = displayMsg.slice(0, 60);
-            setChatCache(prev => ({ ...prev, [chatId]: { ...(prev[chatId]||{}), title } }));
+            setChatCache(prev => {
+              const cur = prev[chatId] || {};
+              const pins = cur.pinnedStudies || [];
+              const nextPins = (reportStudyId != null && !pins.includes(reportStudyId))
+                ? [...pins, reportStudyId]
+                : pins;
+              return { ...prev, [chatId]: { ...cur, title, pinnedStudies: nextPins } };
+            });
             setGlobalChats(prev => prev.map(c => c.chat_id === chatId ? { ...c, title } : c));
           },
           onError: ({ error }) => setCompErr(error || 'Error'),
@@ -772,6 +801,21 @@ function App() {
 
         {/* Composer */}
         <div className="composer-wrap">
+          {isChat && view.chatId && (chatCache[view.chatId]?.pinnedStudies || []).length > 0 && (
+            <div className="composer-pins">
+              <span className="composer-pins-label">Pinned:</span>
+              {(chatCache[view.chatId]?.pinnedStudies || []).map(sid => (
+                <span key={sid} className="composer-pin-chip">
+                  Study {sid}
+                  <button
+                    className="composer-pin-x"
+                    title="Unpin"
+                    onClick={() => unpinStudy(view.chatId, sid)}
+                  >×</button>
+                </span>
+              ))}
+            </div>
+          )}
           <div className={`composer ${!isChat ? 'muted' : ''}`}>
             <textarea
               ref={taRef}

@@ -29,8 +29,11 @@ from store import (
     get_study_detail_cache,
     list_chats,
     list_global_chats,
+    list_pinned_studies,
     list_projects,
+    pin_study_to_chat,
     remove_study_from_project,
+    unpin_study_from_chat,
     update_project,
     update_project_study_data,
     upsert_project_context_summary,
@@ -52,6 +55,8 @@ PROJECT_CONTEXT_MAX_CHARS = int(os.getenv("PROJECT_CONTEXT_MAX_CHARS", "12000"))
 PROJECT_SUMMARY_GEN_LIMIT = int(os.getenv("PROJECT_SUMMARY_GEN_LIMIT", "5"))
 GLOBAL_CONTEXT_MAX_CHARS  = int(os.getenv("GLOBAL_CONTEXT_MAX_CHARS", "24000"))
 REPORT_SAMPLE_LIMIT = 200
+PINNED_REPORT_CONTEXT_MAX_CHARS = int(os.getenv("PINNED_REPORT_CONTEXT_MAX_CHARS", "40000"))
+PINNED_REPORT_MIN_PER_STUDY = int(os.getenv("PINNED_REPORT_MIN_PER_STUDY", "2000"))
 
 CHAT_SYSTEM_PROMPT = """You are a helpful assistant for researchers using the Qiita microbiome database.
 
@@ -70,6 +75,7 @@ Behavioral rules:
 - If you are unsure about any factual detail, clearly say you are unsure instead of guessing.
 - It is always acceptable to answer at a high-level (conceptual explanation) without naming specific studies.
 - If the user asks about obviously out-of-domain or fictional entities, make it clear that these are not Qiita studies and do NOT fabricate any matching study records.
+- When a "PINNED STUDY REPORTS" block is present, you may reference per-sample fields from it verbatim. For cross-study comparisons, only compare studies that appear in pinned reports or in the study context.
 
 When answering:
 - Prefer concise, technically accurate explanations.
@@ -88,6 +94,7 @@ Behavioral rules:
 - You may suggest which studies look most relevant to the researcher's goals.
 - You may suggest follow-up searches or filtering criteria to narrow or broaden results.
 - If the user asks a conceptual question, answer it but also offer to help find relevant studies.
+- When a "PINNED STUDY REPORTS" block is present, you may reference per-sample fields from it verbatim. For cross-study comparisons, only compare studies that appear in pinned reports or in the retrieved results.
 
 When answering:
 - Prefer organized, scannable responses — use tables or bullet lists for multiple studies.
@@ -644,6 +651,88 @@ def _fetch_full_sample_metadata(study_id: int, limit: int = REPORT_SAMPLE_LIMIT)
         return []
 
 
+def _get_or_fetch_full_samples(study_id: int, limit: int = REPORT_SAMPLE_LIMIT):
+    """Return cached full sample rows for a study, falling back to Qiita fetch + cache write."""
+    cached = get_study_detail_cache(study_id)
+    if cached and cached.get("full_samples_json"):
+        try:
+            samples = json.loads(cached["full_samples_json"])
+            if isinstance(samples, list):
+                return samples
+        except Exception:
+            pass
+    samples = _fetch_full_sample_metadata(study_id, limit=limit)
+    if samples:
+        try:
+            upsert_study_detail_cache(study_id, None, None, full_samples_json=json.dumps(samples))
+        except Exception:
+            pass
+    return samples
+
+
+def _build_full_samples_block(study_id: int, budget_chars: int):
+    """Compact full-metadata block for one pinned study, clipped to budget_chars."""
+    header = _fetch_study_header(study_id)
+    samples = _get_or_fetch_full_samples(study_id)
+    title = (header or {}).get("study_title") or "Untitled study"
+    num_samples = (header or {}).get("num_samples") or (len(samples) if samples else 0)
+    data_types = (header or {}).get("data_types") or ""
+
+    lines = [
+        f"### Study {study_id}: {_truncate(title, 140)}",
+        f"  Data Types: {data_types or 'Not available'} | Total samples: {num_samples} | In report: {len(samples)}",
+    ]
+    if not samples:
+        lines.append("  _No sample metadata available._")
+        return "\n".join(lines)
+
+    skip_fields = {"qiita_study_id"}
+    empty_vals = {"none", "null", "nan", "not applicable", "not provided", ""}
+    budget = max(500, int(budget_chars))
+    out = "\n".join(lines) + "\n"
+    truncated_at = None
+    for idx, sample in enumerate(samples):
+        sid = sample.get("sample_id", "?")
+        fields = sample.get("fields") or {}
+        parts = []
+        for k, v in sorted(fields.items()):
+            if k in skip_fields or v is None:
+                continue
+            val = str(v).strip()
+            if not val or val.lower() in empty_vals:
+                continue
+            parts.append(f"{k}={_truncate(val, 120)}")
+        line = f"  {sid}: " + ", ".join(parts) + "\n"
+        if len(out) + len(line) > budget:
+            truncated_at = idx
+            break
+        out += line
+    if truncated_at is not None:
+        out += f"  _(truncated: showed {truncated_at} of {len(samples)} samples due to context budget)_\n"
+    return out.rstrip()
+
+
+def _build_pinned_reports_context(chat_id: str, scope: str):
+    """Build a 'PINNED STUDY REPORTS' context block from studies pinned to this chat."""
+    try:
+        study_ids = list_pinned_studies(chat_id, scope)
+    except Exception:
+        study_ids = []
+    if not study_ids:
+        return None
+    per_study = max(PINNED_REPORT_MIN_PER_STUDY, PINNED_REPORT_CONTEXT_MAX_CHARS // max(1, len(study_ids)))
+    blocks = [_build_full_samples_block(sid, per_study) for sid in study_ids]
+    header = (
+        "PINNED STUDY REPORTS (full sample-level metadata for studies the user attached via /report):\n"
+        "Use these for per-sample questions and cross-study comparisons.\n"
+    )
+    body = "\n\n".join(b for b in blocks if b)
+    text = header + body
+    if len(text) > PINNED_REPORT_CONTEXT_MAX_CHARS:
+        text = text[: PINNED_REPORT_CONTEXT_MAX_CHARS - 40] + "\n...(pinned context truncated)"
+    return text
+
+
 def _fetch_study_header(study_id: int):
     """Fetch one study header row for deterministic study report output."""
     study_id = int(study_id)
@@ -775,7 +864,7 @@ def _build_study_report_markdown(study_id: int) -> str:
             )
         lines.append("")
 
-    samples = _fetch_full_sample_metadata(study_id, limit=REPORT_SAMPLE_LIMIT)
+    samples = _get_or_fetch_full_samples(study_id, limit=REPORT_SAMPLE_LIMIT)
     truncated = bool(num_samples and num_samples > len(samples) and len(samples) >= REPORT_SAMPLE_LIMIT)
     suffix = f", showing first {REPORT_SAMPLE_LIMIT}" if truncated else ""
     lines.append(f"## Samples ({num_samples} total{suffix})")
@@ -1287,6 +1376,8 @@ def api_chat_message_stream(project_id, chat_id):
 
     proj = get_project(project_id, user_id)
     study_ctx = _build_project_study_context(proj, user_id=user_id)
+    pinned_ctx = _build_pinned_reports_context(chat_id, 'project') if report_study_id is None else None
+    combined_ctx = "\n\n".join(x for x in (study_ctx, pinned_ctx) if x) or None
     messages = chat.get('messages') or []
     full_messages = [{"role": m.get("role"), "content": m.get("content")} for m in messages]
     full_messages.append({"role": "user", "content": user_content})
@@ -1300,12 +1391,17 @@ def api_chat_message_stream(project_id, chat_id):
                     assistant_parts.append(token)
                     yield _sse("token", {"token": token})
             else:
-                for token in llm_chat_stream(full_messages, study_context_text=study_ctx):
+                for token in llm_chat_stream(full_messages, study_context_text=combined_ctx):
                     assistant_parts.append(token)
                     yield _sse("token", {"token": token})
             assistant_content = "".join(assistant_parts).strip()
             append_chat_messages(project_id, user_id, chat_id, user_content, assistant_content)
-            yield _sse("done", {"chat_id": chat_id, "persisted": True})
+            if report_study_id is not None:
+                try:
+                    pin_study_to_chat(chat_id, 'project', report_study_id)
+                except Exception:
+                    pass
+            yield _sse("done", {"chat_id": chat_id, "persisted": True, "pinned_study_id": report_study_id})
         except Exception as e:
             yield _sse("error", {"error": str(e)})
 
@@ -1417,8 +1513,10 @@ def api_global_chat_message_stream(chat_id):
         except Exception:
             studies = []
         study_ctx = _build_global_search_context(studies, user_content)
+        pinned_ctx = _build_pinned_reports_context(chat_id, 'global')
+        combined_ctx = "\n\n".join(x for x in (study_ctx, pinned_ctx) if x) or None
     else:
-        study_ctx = None
+        combined_ctx = None
     messages = chat.get('messages') or []
     full_messages = [{"role": m.get("role"), "content": m.get("content")} for m in messages]
     full_messages.append({"role": "user", "content": user_content})
@@ -1434,14 +1532,19 @@ def api_global_chat_message_stream(chat_id):
             else:
                 for token in llm_chat_stream(
                     full_messages,
-                    study_context_text=study_ctx,
+                    study_context_text=combined_ctx,
                     system_prompt=GLOBAL_CHAT_SYSTEM_PROMPT,
                 ):
                     assistant_parts.append(token)
                     yield _sse("token", {"token": token})
             assistant_content = "".join(assistant_parts).strip()
             append_global_chat_messages(user_id, chat_id, user_content, assistant_content)
-            yield _sse("done", {"chat_id": chat_id, "persisted": True})
+            if report_study_id is not None:
+                try:
+                    pin_study_to_chat(chat_id, 'global', report_study_id)
+                except Exception:
+                    pass
+            yield _sse("done", {"chat_id": chat_id, "persisted": True, "pinned_study_id": report_study_id})
         except Exception as e:
             yield _sse("error", {"error": str(e)})
 
@@ -1450,6 +1553,26 @@ def api_global_chat_message_stream(chat_id):
         mimetype='text/event-stream',
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.route('/api/projects/<project_id>/chats/<chat_id>/pinned/<int:study_id>', methods=['DELETE'])
+def api_unpin_project_chat_study(project_id, chat_id, study_id):
+    user_id = request.args.get('user_id') or 'default'
+    chat = get_chat(project_id, user_id, chat_id)
+    if not chat:
+        return jsonify({'error': 'Chat not found'}), 404
+    unpin_study_from_chat(chat_id, 'project', study_id)
+    return jsonify({'ok': True, 'pinned_studies': list_pinned_studies(chat_id, 'project')})
+
+
+@app.route('/api/global-chats/<chat_id>/pinned/<int:study_id>', methods=['DELETE'])
+def api_unpin_global_chat_study(chat_id, study_id):
+    user_id = request.args.get('user_id') or 'default'
+    chat = get_global_chat(user_id, chat_id)
+    if not chat:
+        return jsonify({'error': 'Chat not found'}), 404
+    unpin_study_from_chat(chat_id, 'global', study_id)
+    return jsonify({'ok': True, 'pinned_studies': list_pinned_studies(chat_id, 'global')})
 
 
 if __name__ == '__main__':

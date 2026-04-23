@@ -128,10 +128,19 @@ def _create_schema(conn):
             cached_at TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS chat_pinned_studies (
+            chat_id TEXT NOT NULL,
+            chat_scope TEXT NOT NULL,
+            study_id INTEGER NOT NULL,
+            pinned_at TEXT,
+            PRIMARY KEY (chat_id, chat_scope, study_id)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_projects_user_updated ON projects(user_id, updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_project_studies_project ON project_studies(project_id, updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_project_chats_project_updated ON project_chats(project_id, updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_global_chats_user_updated ON global_chats(user_id, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_chat_pins ON chat_pinned_studies(chat_id, chat_scope);
         """
     )
     # Migrate project_studies to add enriched columns if they don't exist
@@ -149,6 +158,12 @@ def _create_schema(conn):
     # Migrate study_detail_cache to add samples_context if it doesn't exist
     try:
         conn.execute("ALTER TABLE study_detail_cache ADD COLUMN samples_context TEXT")
+    except Exception:
+        pass  # column already exists
+
+    # Migrate study_detail_cache to add full_samples_json if it doesn't exist
+    try:
+        conn.execute("ALTER TABLE study_detail_cache ADD COLUMN full_samples_json TEXT")
     except Exception:
         pass  # column already exists
 
@@ -552,6 +567,11 @@ def get_chat(project_id: str, user_id: str, chat_id: str):
             return None
         chat = _as_dict(row)
         chat["messages"] = _load_project_chat_messages(conn, chat_id)
+        pin_rows = conn.execute(
+            "SELECT study_id FROM chat_pinned_studies WHERE chat_id = ? AND chat_scope = 'project' ORDER BY pinned_at ASC",
+            (chat_id,),
+        ).fetchall()
+        chat["pinned_studies"] = [int(r["study_id"]) for r in pin_rows]
         return chat
 
 
@@ -665,6 +685,11 @@ def get_global_chat(user_id: str, chat_id: str):
             return None
         chat = _as_dict(row)
         chat["messages"] = _load_global_messages(conn, chat_id)
+        pin_rows = conn.execute(
+            "SELECT study_id FROM chat_pinned_studies WHERE chat_id = ? AND chat_scope = 'global' ORDER BY pinned_at ASC",
+            (chat_id,),
+        ).fetchall()
+        chat["pinned_studies"] = [int(r["study_id"]) for r in pin_rows]
         return chat
 
 
@@ -818,7 +843,7 @@ def get_study_detail_cache(study_id: int):
     """Return cached study detail if it exists and is less than TTL hours old, else None."""
     with _conn() as conn:
         row = conn.execute(
-            "SELECT preps_json, artifacts_json, samples_context, cached_at FROM study_detail_cache WHERE study_id = ?",
+            "SELECT preps_json, artifacts_json, samples_context, full_samples_json, cached_at FROM study_detail_cache WHERE study_id = ?",
             (int(study_id),),
         ).fetchone()
     if row is None:
@@ -826,7 +851,6 @@ def get_study_detail_cache(study_id: int):
     cached_at = row["cached_at"]
     if cached_at:
         try:
-            from datetime import timezone
             age = datetime.utcnow() - datetime.fromisoformat(cached_at.rstrip("Z"))
             if age.total_seconds() > _STUDY_DETAIL_CACHE_TTL_HOURS * 3600:
                 return None
@@ -835,24 +859,60 @@ def get_study_detail_cache(study_id: int):
     return _as_dict(row)
 
 
-def upsert_study_detail_cache(study_id: int, preps_json: str, artifacts_json: str, samples_context: str = None):
-    """Cache study detail (preps + artifacts + sample context text) from Qiita.
+def upsert_study_detail_cache(study_id: int, preps_json: str, artifacts_json: str, samples_context: str = None, full_samples_json: str = None):
+    """Cache study detail (preps + artifacts + sample context text + full sample rows) from Qiita.
 
-    Pass None for preps_json/artifacts_json to update only samples_context without
-    overwriting existing prep/artifact data (COALESCE preserves existing values).
+    Pass None for any field to leave the existing value intact (COALESCE).
     """
     with _conn() as conn:
         conn.execute(
             """
-            INSERT INTO study_detail_cache(study_id, preps_json, artifacts_json, samples_context, cached_at)
-            VALUES(?, ?, ?, ?, ?)
+            INSERT INTO study_detail_cache(study_id, preps_json, artifacts_json, samples_context, full_samples_json, cached_at)
+            VALUES(?, ?, ?, ?, ?, ?)
             ON CONFLICT(study_id) DO UPDATE SET
                 preps_json = COALESCE(excluded.preps_json, study_detail_cache.preps_json),
                 artifacts_json = COALESCE(excluded.artifacts_json, study_detail_cache.artifacts_json),
                 samples_context = COALESCE(excluded.samples_context, study_detail_cache.samples_context),
+                full_samples_json = COALESCE(excluded.full_samples_json, study_detail_cache.full_samples_json),
                 cached_at = excluded.cached_at
             """,
-            (int(study_id), preps_json, artifacts_json, samples_context, _now()),
+            (int(study_id), preps_json, artifacts_json, samples_context, full_samples_json, _now()),
         )
         conn.commit()
     return True
+
+
+def pin_study_to_chat(chat_id: str, scope: str, study_id: int):
+    """Attach a study to a chat so its full sample metadata is injected as LLM context."""
+    scope = (scope or "project").strip() or "project"
+    with _conn() as conn:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO chat_pinned_studies(chat_id, chat_scope, study_id, pinned_at)
+            VALUES(?, ?, ?, ?)
+            """,
+            (chat_id, scope, int(study_id), _now()),
+        )
+        conn.commit()
+    return True
+
+
+def unpin_study_from_chat(chat_id: str, scope: str, study_id: int):
+    scope = (scope or "project").strip() or "project"
+    with _conn() as conn:
+        conn.execute(
+            "DELETE FROM chat_pinned_studies WHERE chat_id = ? AND chat_scope = ? AND study_id = ?",
+            (chat_id, scope, int(study_id)),
+        )
+        conn.commit()
+    return True
+
+
+def list_pinned_studies(chat_id: str, scope: str):
+    scope = (scope or "project").strip() or "project"
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT study_id FROM chat_pinned_studies WHERE chat_id = ? AND chat_scope = ? ORDER BY pinned_at ASC",
+            (chat_id, scope),
+        ).fetchall()
+    return [int(r["study_id"]) for r in rows]
