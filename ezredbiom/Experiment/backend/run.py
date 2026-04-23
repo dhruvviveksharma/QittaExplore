@@ -4,6 +4,7 @@ from flask_cors import CORS
 from openai import OpenAI
 from qiita_db.sql_connection import TRN
 import json
+import re
 from dotenv import load_dotenv
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -50,6 +51,7 @@ client = OpenAI(
 PROJECT_CONTEXT_MAX_CHARS = int(os.getenv("PROJECT_CONTEXT_MAX_CHARS", "12000"))
 PROJECT_SUMMARY_GEN_LIMIT = int(os.getenv("PROJECT_SUMMARY_GEN_LIMIT", "5"))
 GLOBAL_CONTEXT_MAX_CHARS  = int(os.getenv("GLOBAL_CONTEXT_MAX_CHARS", "24000"))
+REPORT_SAMPLE_LIMIT = 200
 
 CHAT_SYSTEM_PROMPT = """You are a helpful assistant for researchers using the Qiita microbiome database.
 
@@ -618,6 +620,202 @@ def _fetch_sample_context_text(study_id: int, max_chars: int = 3500) -> str:
         return ""
 
 
+def _fetch_full_sample_metadata(study_id: int, limit: int = REPORT_SAMPLE_LIMIT):
+    """Return sample metadata rows as [{sample_id, fields}] capped to limit."""
+    study_id = int(study_id)
+    limit = max(1, int(limit))
+    try:
+        with TRN:
+            TRN.add(
+                f"""
+                SELECT ss.sample_id, sm.sample_values
+                FROM qiita.study_sample ss
+                JOIN qiita.sample_{study_id} sm ON ss.sample_id = sm.sample_id
+                WHERE ss.study_id = %s
+                  AND ss.sample_id <> 'qiita_sample_column_names'
+                ORDER BY ss.sample_id
+                LIMIT %s
+                """,
+                [study_id, limit],
+            )
+            rows = TRN.execute_fetchindex()
+        return [{"sample_id": r[0], "fields": dict(r[1])} for r in (rows or [])]
+    except Exception:
+        return []
+
+
+def _fetch_study_header(study_id: int):
+    """Fetch one study header row for deterministic study report output."""
+    study_id = int(study_id)
+    try:
+        with TRN:
+            TRN.add(
+                """
+                SELECT s.study_id, s.study_title, s.study_abstract,
+                       s.study_alias, s.metadata_complete,
+                       sp_pi.name AS pi_name, sp_pi.email AS pi_email,
+                       sp_pi.affiliation AS pi_affiliation,
+                       sp_lab.name AS lab_person_name,
+                       (SELECT COUNT(*) FROM qiita.study_sample ss WHERE ss.study_id = s.study_id) AS num_samples,
+                       (SELECT STRING_AGG(DISTINCT dt2.data_type, ', ')
+                        FROM qiita.study_prep_template spt2
+                        JOIN qiita.prep_template pt2 ON spt2.prep_template_id = pt2.prep_template_id
+                        JOIN qiita.data_type dt2 ON pt2.data_type_id = dt2.data_type_id
+                        WHERE spt2.study_id = s.study_id) AS data_types,
+                       (SELECT COUNT(DISTINCT spt3.prep_template_id)
+                        FROM qiita.study_prep_template spt3
+                        WHERE spt3.study_id = s.study_id) AS num_preps
+                FROM qiita.study s
+                LEFT JOIN qiita.study_person sp_pi ON s.principal_investigator_id = sp_pi.study_person_id
+                LEFT JOIN qiita.study_person sp_lab ON s.lab_person_id = sp_lab.study_person_id
+                WHERE s.study_id = %s
+                """,
+                [study_id],
+            )
+            rows = TRN.execute_fetchindex()
+        if not rows:
+            return None
+        r = rows[0]
+        return {
+            "study_id": r[0],
+            "study_title": r[1],
+            "study_abstract": r[2],
+            "study_alias": r[3],
+            "metadata_complete": r[4],
+            "pi_name": r[5],
+            "pi_email": r[6],
+            "pi_affiliation": r[7],
+            "lab_person_name": r[8],
+            "num_samples": r[9],
+            "data_types": r[10],
+            "num_preps": r[11],
+        }
+    except Exception:
+        return None
+
+
+def _md(value):
+    """Escape markdown table delimiters in dynamic text."""
+    return str(value).replace("|", "\\|")
+
+
+def _build_study_report_markdown(study_id: int) -> str:
+    study_id = int(study_id)
+    header = _fetch_study_header(study_id)
+    if not header:
+        return f"# Study {study_id} — Full Report\n\n> Study not found in the database."
+
+    title = header.get("study_title") or "Untitled study"
+    abstract = header.get("study_abstract") or "Not available"
+    pi_name = header.get("pi_name") or "Not available"
+    pi_email = header.get("pi_email") or "Not available"
+    pi_affiliation = header.get("pi_affiliation") or "Not available"
+    lab_person_name = header.get("lab_person_name") or "Not available"
+    data_types = header.get("data_types") or "Not available"
+    num_samples = header.get("num_samples") or 0
+    num_preps = header.get("num_preps") or 0
+
+    lines = [
+        f"# Study {study_id} — Full Report",
+        "",
+        "## Summary",
+        f"- **Title:** {_md(title)}",
+        f"- **Abstract:** {_md(abstract)}",
+        f"- **PI:** {_md(pi_name)} ({_md(pi_email)})",
+        f"- **Affiliation:** {_md(pi_affiliation)}",
+        f"- **Lab Contact:** {_md(lab_person_name)}",
+        f"- **Data Types:** {_md(data_types)}",
+        f"- **Samples:** {num_samples}  |  **Preps:** {num_preps}",
+        "",
+        "## Prep Templates",
+    ]
+
+    preps = []
+    artifacts = []
+    cached = get_study_detail_cache(study_id)
+    if cached:
+        preps = json.loads(cached.get("preps_json") or "[]")
+        artifacts = json.loads(cached.get("artifacts_json") or "[]")
+    else:
+        try:
+            preps, artifacts = _fetch_study_detail_from_qiita(study_id)
+            upsert_study_detail_cache(study_id, json.dumps(preps), json.dumps(artifacts))
+        except Exception:
+            preps = []
+            artifacts = []
+
+    if not preps:
+        lines.append("_No prep templates found._")
+    else:
+        lines.append("| Prep ID | Data Type | Investigation | Platform | Target Gene | Status |")
+        lines.append("|---------|-----------|---------------|----------|-------------|--------|")
+        for prep in preps:
+            prep_id = prep.get("prep_template_id")
+            prep_meta = _fetch_prep_metadata_summary(prep_id) if prep_id is not None else {}
+            lines.append(
+                f"| {prep.get('prep_template_id', '—')} "
+                f"| {_md(prep.get('data_type') or '—')} "
+                f"| {_md(prep.get('investigation_type') or '—')} "
+                f"| {_md(prep_meta.get('platform') or '—')} "
+                f"| {_md(prep_meta.get('target_gene') or '—')} "
+                f"| {_md(prep.get('preprocessing_status') or '—')} |"
+            )
+    lines.append("")
+
+    if artifacts:
+        lines.append("## Artifacts")
+        lines.append("| Artifact ID | Type | Data Type | File Path |")
+        lines.append("|-------------|------|-----------|-----------|")
+        for artifact in artifacts:
+            lines.append(
+                f"| {artifact.get('artifact_id', '—')} "
+                f"| {_md(artifact.get('artifact_type') or '—')} "
+                f"| {_md(artifact.get('data_type') or '—')} "
+                f"| {_md(artifact.get('full_path') or '—')} |"
+            )
+        lines.append("")
+
+    samples = _fetch_full_sample_metadata(study_id, limit=REPORT_SAMPLE_LIMIT)
+    truncated = bool(num_samples and num_samples > len(samples) and len(samples) >= REPORT_SAMPLE_LIMIT)
+    suffix = f", showing first {REPORT_SAMPLE_LIMIT}" if truncated else ""
+    lines.append(f"## Samples ({num_samples} total{suffix})")
+    lines.append("")
+
+    skip_fields = {"qiita_study_id"}
+    empty_vals = {"none", "null", "nan", "not applicable", "not provided", ""}
+    for sample in samples:
+        sample_id = sample.get("sample_id", "?")
+        fields = sample.get("fields") or {}
+        lines.append(f"### {_md(sample_id)}")
+        pairs = []
+        for k, v in sorted(fields.items()):
+            if k in skip_fields or v is None:
+                continue
+            value = str(v).strip()
+            if value.lower() in empty_vals:
+                continue
+            pairs.append((k, value))
+        if pairs:
+            lines.append("| Field | Value |")
+            lines.append("|-------|-------|")
+            for key, value in pairs:
+                lines.append(f"| {_md(key)} | {_md(value)} |")
+        else:
+            lines.append("_No non-empty metadata fields._")
+        lines.append("")
+
+    if truncated:
+        lines.append(f"> **Note:** Report truncated at {REPORT_SAMPLE_LIMIT} samples.")
+
+    return "\n".join(lines)
+
+
+def _stream_text_tokenwise(text: str):
+    """Yield token-like chunks to preserve incremental streaming feel."""
+    for token in re.findall(r"\S+\s*", text):
+        yield token
+
+
 def _fetch_study_detail_from_qiita(study_id: int):
     """Run prep.sql and artifacts.sql queries for a study and return (preps, artifacts)."""
     preps = []
@@ -1074,6 +1272,12 @@ def api_chat_message_stream(project_id, chat_id):
     data = request.get_json() or {}
     user_id = (data.get('user_id') or 'default').strip() or 'default'
     user_content = (data.get('message') or data.get('content') or '').strip()
+    report_study_id = data.get("report_study_id")
+    if report_study_id is not None:
+        try:
+            report_study_id = int(report_study_id)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'report_study_id must be an integer'}), 400
     if not user_content:
         return jsonify({'error': 'message required'}), 400
 
@@ -1090,9 +1294,15 @@ def api_chat_message_stream(project_id, chat_id):
     def generate():
         assistant_parts = []
         try:
-            for token in llm_chat_stream(full_messages, study_context_text=study_ctx):
-                assistant_parts.append(token)
-                yield _sse("token", {"token": token})
+            if report_study_id is not None:
+                report = _build_study_report_markdown(report_study_id)
+                for token in _stream_text_tokenwise(report):
+                    assistant_parts.append(token)
+                    yield _sse("token", {"token": token})
+            else:
+                for token in llm_chat_stream(full_messages, study_context_text=study_ctx):
+                    assistant_parts.append(token)
+                    yield _sse("token", {"token": token})
             assistant_content = "".join(assistant_parts).strip()
             append_chat_messages(project_id, user_id, chat_id, user_content, assistant_content)
             yield _sse("done", {"chat_id": chat_id, "persisted": True})
@@ -1183,6 +1393,12 @@ def api_global_chat_message_stream(chat_id):
     data = request.get_json() or {}
     user_id = (data.get('user_id') or 'default').strip() or 'default'
     user_content = (data.get('message') or data.get('content') or '').strip()
+    report_study_id = data.get("report_study_id")
+    if report_study_id is not None:
+        try:
+            report_study_id = int(report_study_id)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'report_study_id must be an integer'}), 400
     if not user_content:
         return jsonify({'error': 'message required'}), 400
 
@@ -1190,17 +1406,19 @@ def api_global_chat_message_stream(chat_id):
     if not chat:
         return jsonify({'error': 'Chat not found'}), 404
 
-    # Auto-search the Qiita DB based on the user's message before streaming
-    try:
-        sql_spec = llm_query_to_sql(user_content)
-        studies = search_studies_with_sql(
-            sql_spec.get("where_clause", "1=1"),
-            sql_spec.get("params", [])
-        )
-    except Exception:
-        studies = []
-
-    study_ctx = _build_global_search_context(studies, user_content)
+    if report_study_id is None:
+        # Auto-search the Qiita DB based on the user's message before streaming
+        try:
+            sql_spec = llm_query_to_sql(user_content)
+            studies = search_studies_with_sql(
+                sql_spec.get("where_clause", "1=1"),
+                sql_spec.get("params", [])
+            )
+        except Exception:
+            studies = []
+        study_ctx = _build_global_search_context(studies, user_content)
+    else:
+        study_ctx = None
     messages = chat.get('messages') or []
     full_messages = [{"role": m.get("role"), "content": m.get("content")} for m in messages]
     full_messages.append({"role": "user", "content": user_content})
@@ -1208,13 +1426,19 @@ def api_global_chat_message_stream(chat_id):
     def generate():
         assistant_parts = []
         try:
-            for token in llm_chat_stream(
-                full_messages,
-                study_context_text=study_ctx,
-                system_prompt=GLOBAL_CHAT_SYSTEM_PROMPT,
-            ):
-                assistant_parts.append(token)
-                yield _sse("token", {"token": token})
+            if report_study_id is not None:
+                report = _build_study_report_markdown(report_study_id)
+                for token in _stream_text_tokenwise(report):
+                    assistant_parts.append(token)
+                    yield _sse("token", {"token": token})
+            else:
+                for token in llm_chat_stream(
+                    full_messages,
+                    study_context_text=study_ctx,
+                    system_prompt=GLOBAL_CHAT_SYSTEM_PROMPT,
+                ):
+                    assistant_parts.append(token)
+                    yield _sse("token", {"token": token})
             assistant_content = "".join(assistant_parts).strip()
             append_global_chat_messages(user_id, chat_id, user_content, assistant_content)
             yield _sse("done", {"chat_id": chat_id, "persisted": True})

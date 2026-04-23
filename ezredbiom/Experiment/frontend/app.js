@@ -265,6 +265,11 @@ function App() {
   const sendMessage = async () => {
     const msg = input.trim();
     if (!msg || sending) return;
+    const reportMatch = /^\/report\s+(\d+)\s*$/i.exec(msg);
+    const reportStudyId = reportMatch ? parseInt(reportMatch[1], 10) : null;
+    const displayMsg = reportStudyId != null
+      ? `/report ${reportStudyId} - Full study report`
+      : msg;
     setSending(true); setCompErr(''); setInput('');
 
     abortRef.current?.abort();
@@ -280,20 +285,24 @@ function App() {
           if (!res.ok) throw new Error('Failed to create chat');
           const chat = await res.json();
           chatId = chat.chat_id;
-          setChatCache(prev => ({ ...prev, [chatId]: { messages: [], title: msg.slice(0, 60) } }));
+          setChatCache(prev => ({ ...prev, [chatId]: { messages: [], title: displayMsg.slice(0, 60) } }));
           setView(v => ({ ...v, chatId }));
         }
-        optimisticAppend(chatId, msg);
+        optimisticAppend(chatId, displayMsg);
         const res = await fetch(`${API}/projects/${projId}/chats/${chatId}/message/stream`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ user_id: USER_ID, message: msg }), signal: ctrl.signal,
+          body: JSON.stringify({
+            user_id: USER_ID,
+            message: msg,
+            ...(reportStudyId != null && { report_study_id: reportStudyId }),
+          }), signal: ctrl.signal,
         });
         if (!res.ok || !res.body) throw new Error('Stream failed');
         await parseSSE(res, {
           onToken: ({ token }) => patchLast(chatId, m => ({ ...m, content: (m.content||'') + (token||'') })),
           onDone: () => {
             patchLast(chatId, m => ({ ...m, isStreaming: false }));
-            const title = msg.slice(0, 60);
+            const title = displayMsg.slice(0, 60);
             setChatCache(prev => ({ ...prev, [chatId]: { ...(prev[chatId]||{}), title } }));
             setOpenProject(prev => prev ? {
               ...prev,
@@ -310,14 +319,19 @@ function App() {
           if (!res.ok) throw new Error('Failed to create chat');
           const chat = await res.json();
           chatId = chat.chat_id;
-          setChatCache(prev => ({ ...prev, [chatId]: { messages: [], title: msg.slice(0, 60) } }));
+          setChatCache(prev => ({ ...prev, [chatId]: { messages: [], title: displayMsg.slice(0, 60) } }));
           setGlobalChats(prev => [chat, ...prev]);
           setView(v => ({ ...v, chatId }));
         }
-        optimisticAppend(chatId, msg);
+        optimisticAppend(chatId, displayMsg);
         const res = await fetch(`${API}/global-chats/${chatId}/message/stream`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ user_id: USER_ID, message: msg, selected_studies: ctxStudies }),
+          body: JSON.stringify({
+            user_id: USER_ID,
+            message: msg,
+            selected_studies: ctxStudies,
+            ...(reportStudyId != null && { report_study_id: reportStudyId }),
+          }),
           signal: ctrl.signal,
         });
         if (!res.ok || !res.body) throw new Error('Stream failed');
@@ -325,7 +339,7 @@ function App() {
           onToken: ({ token }) => patchLast(chatId, m => ({ ...m, content: (m.content||'') + (token||'') })),
           onDone: () => {
             patchLast(chatId, m => ({ ...m, isStreaming: false }));
-            const title = msg.slice(0, 60);
+            const title = displayMsg.slice(0, 60);
             setChatCache(prev => ({ ...prev, [chatId]: { ...(prev[chatId]||{}), title } }));
             setGlobalChats(prev => prev.map(c => c.chat_id === chatId ? { ...c, title } : c));
           },
@@ -720,7 +734,7 @@ function App() {
                         : 'Add studies as context from Browse, then ask questions here.'}
                     </p>
                     <div className="chat-empty-chips">
-                      {['What are the key themes?','Who are the PIs?','Summarize the abstracts','What sample types were used?']
+                      {['What are the key themes?','Who are the PIs?','Summarize the abstracts','What sample types were used?','/report 104 - Full study report']
                         .map(q => (
                           <button key={q} className="chat-starter" onClick={() => { setInput(q); taRef.current?.focus(); }}>{q}</button>
                         ))}
