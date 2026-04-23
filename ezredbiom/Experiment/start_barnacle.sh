@@ -14,11 +14,24 @@ mkdir -p "$(dirname "$QIITA_EXPERIMENT_DB_PATH")"
 
 echo "Compiling frontend JSX..."
 cd "$SCRIPT_DIR/frontend"
-npx --yes @babel/cli@7 \
+# Install babel tools locally on first run (cached in node_modules after that)
+if [ ! -f node_modules/.bin/babel ]; then
+  echo "  Installing Babel (first run only)..."
+  # Create a minimal package.json if one doesn't exist
+  [ -f package.json ] || echo '{"name":"qiita-frontend","private":true}' > package.json
+  npm install --save-dev \
+    @babel/cli@7 @babel/core@7 \
+    @babel/preset-react@7 @babel/preset-env@7 || true
+fi
+if [ -f node_modules/.bin/babel ]; then
+  node_modules/.bin/babel app.js \
     --presets @babel/preset-react,@babel/preset-env \
-    app.js -o app.compiled.js 2>/dev/null \
-  && echo "Frontend compiled." \
-  || echo "Warning: Babel compile failed, browser will fall back to runtime transpilation."
+    -o app.compiled.js \
+    && echo "Frontend compiled." \
+    || echo "Warning: Babel compile failed, browser will fall back to runtime transpilation."
+else
+  echo "Warning: Babel not available, browser will fall back to runtime transpilation."
+fi
 
 cd "$SCRIPT_DIR/backend"
 echo "Starting Flask dev server on port 5001..."
