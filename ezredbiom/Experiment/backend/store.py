@@ -1,6 +1,9 @@
 """Compatibility layer that exposes the project store API from SQLite backend."""
 
 from sql_store import (  # noqa: F401
+    PINNED_STUDIES_PER_CHAT_CAP,
+    SCOPE_GLOBAL,
+    SCOPE_PROJECT,
     add_study_to_project,
     append_chat_messages,
     append_global_chat_messages,

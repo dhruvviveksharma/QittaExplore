@@ -567,11 +567,7 @@ def get_chat(project_id: str, user_id: str, chat_id: str):
             return None
         chat = _as_dict(row)
         chat["messages"] = _load_project_chat_messages(conn, chat_id)
-        pin_rows = conn.execute(
-            "SELECT study_id FROM chat_pinned_studies WHERE chat_id = ? AND chat_scope = 'project' ORDER BY pinned_at ASC",
-            (chat_id,),
-        ).fetchall()
-        chat["pinned_studies"] = [int(r["study_id"]) for r in pin_rows]
+        chat["pinned_studies"] = _load_pinned_studies(conn, chat_id, SCOPE_PROJECT)
         return chat
 
 
@@ -685,11 +681,7 @@ def get_global_chat(user_id: str, chat_id: str):
             return None
         chat = _as_dict(row)
         chat["messages"] = _load_global_messages(conn, chat_id)
-        pin_rows = conn.execute(
-            "SELECT study_id FROM chat_pinned_studies WHERE chat_id = ? AND chat_scope = 'global' ORDER BY pinned_at ASC",
-            (chat_id,),
-        ).fetchall()
-        chat["pinned_studies"] = [int(r["study_id"]) for r in pin_rows]
+        chat["pinned_studies"] = _load_pinned_studies(conn, chat_id, SCOPE_GLOBAL)
         return chat
 
 
@@ -882,10 +874,36 @@ def upsert_study_detail_cache(study_id: int, preps_json: str, artifacts_json: st
     return True
 
 
+SCOPE_PROJECT = "project"
+SCOPE_GLOBAL = "global"
+PINNED_STUDIES_PER_CHAT_CAP = 10
+
+
+def _normalize_scope(scope: str) -> str:
+    s = (scope or "").strip()
+    return s if s in (SCOPE_PROJECT, SCOPE_GLOBAL) else SCOPE_PROJECT
+
+
+def _load_pinned_studies(conn, chat_id: str, scope: str):
+    rows = conn.execute(
+        "SELECT study_id FROM chat_pinned_studies WHERE chat_id = ? AND chat_scope = ? ORDER BY pinned_at ASC",
+        (chat_id, _normalize_scope(scope)),
+    ).fetchall()
+    return [int(r["study_id"]) for r in rows]
+
+
 def pin_study_to_chat(chat_id: str, scope: str, study_id: int):
-    """Attach a study to a chat so its full sample metadata is injected as LLM context."""
-    scope = (scope or "project").strip() or "project"
+    """Attach a study to a chat so its full sample metadata is injected as LLM context.
+
+    Caps at PINNED_STUDIES_PER_CHAT_CAP to bound LLM context growth.
+    """
+    scope = _normalize_scope(scope)
     with _conn() as conn:
+        existing = _load_pinned_studies(conn, chat_id, scope)
+        if int(study_id) in existing:
+            return True
+        if len(existing) >= PINNED_STUDIES_PER_CHAT_CAP:
+            return False
         conn.execute(
             """
             INSERT OR IGNORE INTO chat_pinned_studies(chat_id, chat_scope, study_id, pinned_at)
@@ -898,21 +916,15 @@ def pin_study_to_chat(chat_id: str, scope: str, study_id: int):
 
 
 def unpin_study_from_chat(chat_id: str, scope: str, study_id: int):
-    scope = (scope or "project").strip() or "project"
     with _conn() as conn:
         conn.execute(
             "DELETE FROM chat_pinned_studies WHERE chat_id = ? AND chat_scope = ? AND study_id = ?",
-            (chat_id, scope, int(study_id)),
+            (chat_id, _normalize_scope(scope), int(study_id)),
         )
         conn.commit()
     return True
 
 
 def list_pinned_studies(chat_id: str, scope: str):
-    scope = (scope or "project").strip() or "project"
     with _conn() as conn:
-        rows = conn.execute(
-            "SELECT study_id FROM chat_pinned_studies WHERE chat_id = ? AND chat_scope = ? ORDER BY pinned_at ASC",
-            (chat_id, scope),
-        ).fetchall()
-    return [int(r["study_id"]) for r in rows]
+        return _load_pinned_studies(conn, chat_id, scope)

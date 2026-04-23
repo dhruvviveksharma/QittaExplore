@@ -13,6 +13,8 @@ from services.llm import llm_query_to_sql
 from services.study_service import search_studies_with_sql
 
 from store import (
+    SCOPE_GLOBAL,
+    SCOPE_PROJECT,
     add_study_to_project,
     append_chat_messages,
     append_global_chat_messages,
@@ -670,9 +672,26 @@ def _get_or_fetch_full_samples(study_id: int, limit: int = REPORT_SAMPLE_LIMIT):
     return samples
 
 
+_STUDY_HEADER_TTL_SECONDS = 3600
+_study_header_cache = {}  # study_id -> (fetched_at_epoch, header_dict_or_None)
+
+
+def _fetch_study_header_cached(study_id: int):
+    """TTL-memoized wrapper around _fetch_study_header (hot path for pinned context)."""
+    import time
+    sid = int(study_id)
+    now = time.time()
+    entry = _study_header_cache.get(sid)
+    if entry and now - entry[0] < _STUDY_HEADER_TTL_SECONDS:
+        return entry[1]
+    header = _fetch_study_header(sid)
+    _study_header_cache[sid] = (now, header)
+    return header
+
+
 def _build_full_samples_block(study_id: int, budget_chars: int):
     """Compact full-metadata block for one pinned study, clipped to budget_chars."""
-    header = _fetch_study_header(study_id)
+    header = _fetch_study_header_cached(study_id)
     samples = _get_or_fetch_full_samples(study_id)
     title = (header or {}).get("study_title") or "Untitled study"
     num_samples = (header or {}).get("num_samples") or (len(samples) if samples else 0)
@@ -712,16 +731,13 @@ def _build_full_samples_block(study_id: int, budget_chars: int):
     return out.rstrip()
 
 
-def _build_pinned_reports_context(chat_id: str, scope: str):
-    """Build a 'PINNED STUDY REPORTS' context block from studies pinned to this chat."""
-    try:
-        study_ids = list_pinned_studies(chat_id, scope)
-    except Exception:
-        study_ids = []
+def _build_pinned_reports_context(study_ids):
+    """Build a 'PINNED STUDY REPORTS' context block from the given pinned study IDs."""
     if not study_ids:
         return None
     per_study = max(PINNED_REPORT_MIN_PER_STUDY, PINNED_REPORT_CONTEXT_MAX_CHARS // max(1, len(study_ids)))
-    blocks = [_build_full_samples_block(sid, per_study) for sid in study_ids]
+    with ThreadPoolExecutor(max_workers=min(len(study_ids), 4)) as pool:
+        blocks = list(pool.map(lambda sid: _build_full_samples_block(sid, per_study), study_ids))
     header = (
         "PINNED STUDY REPORTS (full sample-level metadata for studies the user attached via /report):\n"
         "Use these for per-sample questions and cross-study comparisons.\n"
@@ -729,7 +745,8 @@ def _build_pinned_reports_context(chat_id: str, scope: str):
     body = "\n\n".join(b for b in blocks if b)
     text = header + body
     if len(text) > PINNED_REPORT_CONTEXT_MAX_CHARS:
-        text = text[: PINNED_REPORT_CONTEXT_MAX_CHARS - 40] + "\n...(pinned context truncated)"
+        cut = text.rfind("\n", 0, PINNED_REPORT_CONTEXT_MAX_CHARS - 40)
+        text = text[: max(cut, PINNED_REPORT_CONTEXT_MAX_CHARS - 40)] + "\n...(pinned context truncated)"
     return text
 
 
@@ -1376,7 +1393,7 @@ def api_chat_message_stream(project_id, chat_id):
 
     proj = get_project(project_id, user_id)
     study_ctx = _build_project_study_context(proj, user_id=user_id)
-    pinned_ctx = _build_pinned_reports_context(chat_id, 'project') if report_study_id is None else None
+    pinned_ctx = _build_pinned_reports_context(chat.get("pinned_studies") or []) if report_study_id is None else None
     combined_ctx = "\n\n".join(x for x in (study_ctx, pinned_ctx) if x) or None
     messages = chat.get('messages') or []
     full_messages = [{"role": m.get("role"), "content": m.get("content")} for m in messages]
@@ -1398,9 +1415,9 @@ def api_chat_message_stream(project_id, chat_id):
             append_chat_messages(project_id, user_id, chat_id, user_content, assistant_content)
             if report_study_id is not None:
                 try:
-                    pin_study_to_chat(chat_id, 'project', report_study_id)
+                    pin_study_to_chat(chat_id, SCOPE_PROJECT, report_study_id)
                 except Exception:
-                    pass
+                    app.logger.exception("failed to pin study %s to project chat %s", report_study_id, chat_id)
             yield _sse("done", {"chat_id": chat_id, "persisted": True, "pinned_study_id": report_study_id})
         except Exception as e:
             yield _sse("error", {"error": str(e)})
@@ -1513,7 +1530,7 @@ def api_global_chat_message_stream(chat_id):
         except Exception:
             studies = []
         study_ctx = _build_global_search_context(studies, user_content)
-        pinned_ctx = _build_pinned_reports_context(chat_id, 'global')
+        pinned_ctx = _build_pinned_reports_context(chat.get("pinned_studies") or [])
         combined_ctx = "\n\n".join(x for x in (study_ctx, pinned_ctx) if x) or None
     else:
         combined_ctx = None
@@ -1541,9 +1558,9 @@ def api_global_chat_message_stream(chat_id):
             append_global_chat_messages(user_id, chat_id, user_content, assistant_content)
             if report_study_id is not None:
                 try:
-                    pin_study_to_chat(chat_id, 'global', report_study_id)
+                    pin_study_to_chat(chat_id, SCOPE_GLOBAL, report_study_id)
                 except Exception:
-                    pass
+                    app.logger.exception("failed to pin study %s to global chat %s", report_study_id, chat_id)
             yield _sse("done", {"chat_id": chat_id, "persisted": True, "pinned_study_id": report_study_id})
         except Exception as e:
             yield _sse("error", {"error": str(e)})
@@ -1561,8 +1578,8 @@ def api_unpin_project_chat_study(project_id, chat_id, study_id):
     chat = get_chat(project_id, user_id, chat_id)
     if not chat:
         return jsonify({'error': 'Chat not found'}), 404
-    unpin_study_from_chat(chat_id, 'project', study_id)
-    return jsonify({'ok': True, 'pinned_studies': list_pinned_studies(chat_id, 'project')})
+    unpin_study_from_chat(chat_id, SCOPE_PROJECT, study_id)
+    return jsonify({'ok': True, 'pinned_studies': list_pinned_studies(chat_id, SCOPE_PROJECT)})
 
 
 @app.route('/api/global-chats/<chat_id>/pinned/<int:study_id>', methods=['DELETE'])
@@ -1571,8 +1588,8 @@ def api_unpin_global_chat_study(chat_id, study_id):
     chat = get_global_chat(user_id, chat_id)
     if not chat:
         return jsonify({'error': 'Chat not found'}), 404
-    unpin_study_from_chat(chat_id, 'global', study_id)
-    return jsonify({'ok': True, 'pinned_studies': list_pinned_studies(chat_id, 'global')})
+    unpin_study_from_chat(chat_id, SCOPE_GLOBAL, study_id)
+    return jsonify({'ok': True, 'pinned_studies': list_pinned_studies(chat_id, SCOPE_GLOBAL)})
 
 
 if __name__ == '__main__':

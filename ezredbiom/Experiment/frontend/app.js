@@ -261,6 +261,16 @@ function App() {
       };
     });
 
+  const applyStreamDone = (chatId, title, reportStudyId) => {
+    patchLast(chatId, m => ({ ...m, isStreaming: false }));
+    setChatCache(prev => {
+      const cur = prev[chatId] || {};
+      const pins = cur.pinnedStudies || [];
+      const nextPins = (reportStudyId != null && !pins.includes(reportStudyId)) ? [...pins, reportStudyId] : pins;
+      return { ...prev, [chatId]: { ...cur, title, pinnedStudies: nextPins } };
+    });
+  };
+
   const unpinStudy = async (chatId, studyId) => {
     setChatCache(prev => {
       const cur = prev[chatId];
@@ -316,16 +326,8 @@ function App() {
         await parseSSE(res, {
           onToken: ({ token }) => patchLast(chatId, m => ({ ...m, content: (m.content||'') + (token||'') })),
           onDone: () => {
-            patchLast(chatId, m => ({ ...m, isStreaming: false }));
             const title = displayMsg.slice(0, 60);
-            setChatCache(prev => {
-              const cur = prev[chatId] || {};
-              const pins = cur.pinnedStudies || [];
-              const nextPins = (reportStudyId != null && !pins.includes(reportStudyId))
-                ? [...pins, reportStudyId]
-                : pins;
-              return { ...prev, [chatId]: { ...cur, title, pinnedStudies: nextPins } };
-            });
+            applyStreamDone(chatId, title, reportStudyId);
             setOpenProject(prev => prev ? {
               ...prev,
               chats: (prev.chats||[]).map(c => c.chat_id === chatId ? { ...c, title } : c)
@@ -360,16 +362,8 @@ function App() {
         await parseSSE(res, {
           onToken: ({ token }) => patchLast(chatId, m => ({ ...m, content: (m.content||'') + (token||'') })),
           onDone: () => {
-            patchLast(chatId, m => ({ ...m, isStreaming: false }));
             const title = displayMsg.slice(0, 60);
-            setChatCache(prev => {
-              const cur = prev[chatId] || {};
-              const pins = cur.pinnedStudies || [];
-              const nextPins = (reportStudyId != null && !pins.includes(reportStudyId))
-                ? [...pins, reportStudyId]
-                : pins;
-              return { ...prev, [chatId]: { ...cur, title, pinnedStudies: nextPins } };
-            });
+            applyStreamDone(chatId, title, reportStudyId);
             setGlobalChats(prev => prev.map(c => c.chat_id === chatId ? { ...c, title } : c));
           },
           onError: ({ error }) => setCompErr(error || 'Error'),
