@@ -1,0 +1,41 @@
+# ezredbiom — qiita_config.cfg template.
+#
+# The ezredbiom container reads QIITA_CONFIG_FP at startup and the qiita-spots
+# library uses it to connect to the lab's PostgreSQL + Redis.
+#
+# Recommended workflow:
+#   1. Ask the lab Qiita admin for a working qiita_config.cfg — they already
+#      have one for the existing Qiita install.
+#   2. Place the real file at ezredbiom/Experiment/secrets/qiita_config.cfg.
+#      docker-compose.yml bind-mounts that path read-only into the container.
+#   3. The secrets/ directory is gitignored so the file never reaches a remote.
+#
+# Below is a minimal stub showing the sections the runtime actually exercises.
+# A full Qiita config has many more sections (EBI, SMTP, portal, etc.) — copy
+# the lab's working file rather than authoring this from scratch.
+
+[main]
+TEST_ENVIRONMENT = FALSE
+LOG_DIR =
+REQUIRE_APPROVAL = True
+BASE_URL = https://your-lab-domain.example
+WORKING_DIR = /tmp/qiita-working
+BASE_DATA_DIR = /tmp/qiita-data
+MAX_UPLOAD_SIZE = 100
+VALID_UPLOAD_EXTENSION = fastq,fastq.gz,txt,tsv,sff,fna,qual
+
+[postgres]
+# Lab Postgres — the app reads from this read-only.
+USER = REPLACE_ME
+PASSWORD = REPLACE_ME
+ADMIN_USER = REPLACE_ME
+ADMIN_PASSWORD = REPLACE_ME
+HOST = REPLACE_ME
+PORT = 5432
+DATABASE = qiita
+
+[redis]
+HOST = REPLACE_ME
+PORT = 6379
+PASSWORD =
+DB = 0

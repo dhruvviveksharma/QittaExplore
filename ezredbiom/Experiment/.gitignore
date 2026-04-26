@@ -1,0 +1,16 @@
+# Local secrets and build artifacts for the deployment stack.
+# Scoped to ezredbiom/Experiment/ — does not interfere with the repo-root
+# .gitignore.
+
+.env
+secrets/
+nginx/*.local.conf
+
+# Dev SQLite store
+backend/data/projects.db
+
+# Compiled frontend (regenerated in the Docker image build)
+frontend/app.compiled.js
+frontend/node_modules/
+frontend/package-lock.json
+frontend/package.json

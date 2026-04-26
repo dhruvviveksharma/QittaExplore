@@ -1,0 +1,46 @@
+# Keep the build context (and image) small + secret-free.
+# Build context is the repo root, so paths are relative to that.
+
+# Dev artifacts that must never enter the image
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.mypy_cache
+**/.DS_Store
+
+# Local SQLite store (dev data)
+ezredbiom/Experiment/backend/data/projects.db
+ezredbiom/Experiment/backend/data/
+
+# Frontend dev installs (Babel is installed inside the build, not copied)
+ezredbiom/Experiment/frontend/node_modules
+ezredbiom/Experiment/frontend/package-lock.json
+
+# Notebooks and dev scratch
+**/*.ipynb
+**/.ipynb_checkpoints
+ezredbiom/Works/
+ezredbiom/retrieval.ipynb
+ezredbiom/test.ipynb
+
+# Test data — Postgres serves this in production
+test_data_studies/
+
+# Secrets must never be baked into the image
+ezredbiom/Experiment/.env
+ezredbiom/Experiment/secrets/
+qiita_config.cfg
+**/qiita_config.cfg
+
+# Redis dump artifact occasionally produced during dev
+dump.rdb
+
+# Git internals
+.git/
+.gitignore
+.github/
+
+# Editor / OS junk
+.idea/
+.vscode/
+*.swp
