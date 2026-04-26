@@ -10,6 +10,25 @@ const apiFetch = (path, opts = {}) =>
 const apiPost  = (path, body)  => apiFetch(path, { method: 'POST',   body: JSON.stringify(body) });
 const apiDel   = (path)        => apiFetch(path, { method: 'DELETE' });
 
+// Module-scope coalescing for /studies/<id>/detail. All callers (modal + every
+// SamplesReportBubble) share one in-flight promise + one cached result per study,
+// so we don't slam the (slow, single-transaction) Qiita DB with parallel duplicates.
+const _studyDetailCache = new Map();
+const _studyDetailInflight = new Map();
+async function fetchStudyDetail(studyId, { signal } = {}) {
+  if (_studyDetailCache.has(studyId)) return _studyDetailCache.get(studyId);
+  if (_studyDetailInflight.has(studyId)) return _studyDetailInflight.get(studyId);
+  const p = (async () => {
+    const res = await apiFetch(`/studies/${studyId}/detail`, signal ? { signal } : {});
+    if (!res.ok) throw new Error(`detail ${res.status}`);
+    const d = await res.json();
+    _studyDetailCache.set(studyId, d);
+    return d;
+  })().finally(() => { _studyDetailInflight.delete(studyId); });
+  _studyDetailInflight.set(studyId, p);
+  return p;
+}
+
 async function parseSSE(response, { onToken, onUi, onDone, onError }, signal) {
   const reader = response.body.getReader();
   const dec    = new TextDecoder();
@@ -408,11 +427,8 @@ function SamplesReportBubble({ ui, messageKey }) {
     detailReqRef.current = true;
     setDetailLoading(true);
     try {
-      const res = await apiFetch(`/studies/${study_id}/detail`);
-      if (res.ok) {
-        const d = await res.json();
-        setDetail({ preps: d.preps || [], artifacts: d.artifacts || [] });
-      }
+      const d = await fetchStudyDetail(study_id);
+      setDetail({ preps: d.preps || [], artifacts: d.artifacts || [] });
     } catch (_) {
       detailReqRef.current = false;
     } finally {
@@ -829,10 +845,13 @@ function App() {
     modalAbortRef.current = ctrl;
     setModalStudy(study); setModalDetail(null); setModalDetailLoading(true);
     try {
-      const res = await apiFetch(`/studies/${study.study_id}/detail`, { signal: ctrl.signal });
-      if (res.ok && !ctrl.signal.aborted) { const d = await res.json(); setModalDetail(d); }
-    } catch (_) {}
-    if (!ctrl.signal.aborted) setModalDetailLoading(false);
+      const d = await fetchStudyDetail(study.study_id);
+      if (!ctrl.signal.aborted) setModalDetail(d);
+    } catch (_) {
+      // swallow — loading flag still cleared below
+    } finally {
+      if (!ctrl.signal.aborted) setModalDetailLoading(false);
+    }
   };
 
   const closeModal = () => {
