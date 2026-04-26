@@ -13,6 +13,7 @@ from services.llm import llm_query_to_sql
 from services.study_service import search_studies_with_sql
 
 from store import (
+    PINNED_STUDIES_PER_CHAT_CAP,
     SCOPE_GLOBAL,
     SCOPE_PROJECT,
     add_study_to_project,
@@ -750,6 +751,41 @@ def _build_pinned_reports_context(study_ids):
     return text
 
 
+def _build_samples_report_payload(study_id: int, sample_limit: int = REPORT_SAMPLE_LIMIT):
+    """Build the structured payload rendered as an inline samples-browser in the chat bubble."""
+    study_id = int(study_id)
+    header = _fetch_study_header_cached(study_id) or {}
+    samples = _get_or_fetch_full_samples(study_id, limit=sample_limit) or []
+    return {
+        "kind": "samples_report",
+        "study_id": study_id,
+        "header": {
+            "study_id": study_id,
+            "study_title": header.get("study_title") or "Untitled study",
+            "pi_name": header.get("pi_name"),
+            "pi_affiliation": header.get("pi_affiliation"),
+            "num_samples": header.get("num_samples"),
+            "data_types": header.get("data_types"),
+            "num_preps": header.get("num_preps"),
+        },
+        "samples": samples,
+    }
+
+
+def _auto_pin_project_studies(chat_id: str, project: dict):
+    """Pin up to PINNED_STUDIES_PER_CHAT_CAP project studies (newest first) onto a project chat."""
+    studies = (project or {}).get("studies") or []
+    # _load_project_studies already orders by added_at DESC, study_id ASC — preserve that order.
+    for s in studies[:PINNED_STUDIES_PER_CHAT_CAP]:
+        sid = s.get("study_id")
+        if sid is None:
+            continue
+        try:
+            pin_study_to_chat(chat_id, SCOPE_PROJECT, int(sid))
+        except Exception:
+            app.logger.exception("auto-pin failed for study %s on chat %s", sid, chat_id)
+
+
 def _fetch_study_header(study_id: int):
     """Fetch one study header row for deterministic study report output."""
     study_id = int(study_id)
@@ -805,6 +841,8 @@ def _md(value):
     return str(value).replace("|", "\\|")
 
 
+# DEPRECATED for chat path: superseded by _build_samples_report_payload + structured `event: ui`
+# rendering. Retained for potential future export-to-markdown use cases.
 def _build_study_report_markdown(study_id: int) -> str:
     study_id = int(study_id)
     header = _fetch_study_header(study_id)
@@ -916,6 +954,7 @@ def _build_study_report_markdown(study_id: int) -> str:
     return "\n".join(lines)
 
 
+# DEPRECATED for chat path: see _build_study_report_markdown note above.
 def _stream_text_tokenwise(text: str):
     """Yield token-like chunks to preserve incremental streaming feel."""
     for token in re.findall(r"\S+\s*", text):
@@ -1328,12 +1367,35 @@ def api_create_chat(project_id):
         return jsonify({'error': 'Project not found'}), 404
     first_message = (data.get('message') or data.get('first_message') or '').strip()
     chat = create_chat(project_id, user_id, first_message or data.get('title'))
+    _auto_pin_project_studies(chat["chat_id"], proj)
     if first_message:
         study_ctx = _build_project_study_context(proj, user_id=user_id)
         assistant_content = llm_chat([{"role": "user", "content": first_message}], study_context_text=study_ctx)
         append_chat_messages(project_id, user_id, chat["chat_id"], first_message, assistant_content)
-        chat = get_chat(project_id, user_id, chat["chat_id"])
+    chat = get_chat(project_id, user_id, chat["chat_id"])
     return jsonify(chat)
+
+
+@app.route('/api/projects/<project_id>/preload', methods=['POST'])
+def api_project_preload(project_id):
+    """Warm `study_detail_cache.full_samples_json` for every study in the project (fire-and-forget)."""
+    data = request.get_json(silent=True) or {}
+    user_id = (data.get('user_id') or request.args.get('user_id') or 'default').strip() or 'default'
+    proj = get_project(project_id, user_id)
+    if not proj:
+        return jsonify({'error': 'Project not found'}), 404
+    queued = []
+    for s in (proj.get('studies') or []):
+        sid = s.get('study_id')
+        if sid is None:
+            continue
+        try:
+            sid_int = int(sid)
+        except (TypeError, ValueError):
+            continue
+        _bg_executor.submit(_get_or_fetch_full_samples, sid_int, 500)
+        queued.append(sid_int)
+    return jsonify({'queued': queued})
 
 
 @app.route('/api/projects/<project_id>/chats/<chat_id>', methods=['GET'])
@@ -1401,18 +1463,22 @@ def api_chat_message_stream(project_id, chat_id):
 
     def generate():
         assistant_parts = []
+        ui_payload = None
         try:
             if report_study_id is not None:
-                report = _build_study_report_markdown(report_study_id)
-                for token in _stream_text_tokenwise(report):
-                    assistant_parts.append(token)
-                    yield _sse("token", {"token": token})
+                progress = f"Loading sample metadata for study {report_study_id}…"
+                yield _sse("token", {"token": progress})
+                ui_payload = _build_samples_report_payload(report_study_id)
+                num_samples = (ui_payload.get("header") or {}).get("num_samples") or len(ui_payload.get("samples") or [])
+                fallback = f"Loaded full sample metadata for study {report_study_id} ({num_samples} samples). See inline browser."
+                assistant_parts = [fallback]
+                yield _sse("ui", ui_payload)
             else:
                 for token in llm_chat_stream(full_messages, study_context_text=combined_ctx):
                     assistant_parts.append(token)
                     yield _sse("token", {"token": token})
             assistant_content = "".join(assistant_parts).strip()
-            append_chat_messages(project_id, user_id, chat_id, user_content, assistant_content)
+            append_chat_messages(project_id, user_id, chat_id, user_content, assistant_content, assistant_ui_payload=ui_payload)
             if report_study_id is not None:
                 try:
                     pin_study_to_chat(chat_id, SCOPE_PROJECT, report_study_id)
@@ -1444,6 +1510,7 @@ def api_create_chat_stream(project_id):
     chat = create_chat(project_id, user_id, user_content)
     if not chat:
         return jsonify({'error': 'Failed to create chat'}), 500
+    _auto_pin_project_studies(chat["chat_id"], proj)
 
     study_ctx = _build_project_study_context(proj, user_id=user_id)
 
@@ -1540,12 +1607,16 @@ def api_global_chat_message_stream(chat_id):
 
     def generate():
         assistant_parts = []
+        ui_payload = None
         try:
             if report_study_id is not None:
-                report = _build_study_report_markdown(report_study_id)
-                for token in _stream_text_tokenwise(report):
-                    assistant_parts.append(token)
-                    yield _sse("token", {"token": token})
+                progress = f"Loading sample metadata for study {report_study_id}…"
+                yield _sse("token", {"token": progress})
+                ui_payload = _build_samples_report_payload(report_study_id)
+                num_samples = (ui_payload.get("header") or {}).get("num_samples") or len(ui_payload.get("samples") or [])
+                fallback = f"Loaded full sample metadata for study {report_study_id} ({num_samples} samples). See inline browser."
+                assistant_parts = [fallback]
+                yield _sse("ui", ui_payload)
             else:
                 for token in llm_chat_stream(
                     full_messages,
@@ -1555,7 +1626,7 @@ def api_global_chat_message_stream(chat_id):
                     assistant_parts.append(token)
                     yield _sse("token", {"token": token})
             assistant_content = "".join(assistant_parts).strip()
-            append_global_chat_messages(user_id, chat_id, user_content, assistant_content)
+            append_global_chat_messages(user_id, chat_id, user_content, assistant_content, assistant_ui_payload=ui_payload)
             if report_study_id is not None:
                 try:
                     pin_study_to_chat(chat_id, SCOPE_GLOBAL, report_study_id)

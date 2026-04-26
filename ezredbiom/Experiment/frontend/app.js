@@ -10,7 +10,7 @@ const apiFetch = (path, opts = {}) =>
 const apiPost  = (path, body)  => apiFetch(path, { method: 'POST',   body: JSON.stringify(body) });
 const apiDel   = (path)        => apiFetch(path, { method: 'DELETE' });
 
-async function parseSSE(response, { onToken, onDone, onError }, signal) {
+async function parseSSE(response, { onToken, onUi, onDone, onError }, signal) {
   const reader = response.body.getReader();
   const dec    = new TextDecoder();
   let buf      = '';
@@ -30,10 +30,126 @@ async function parseSSE(response, { onToken, onDone, onError }, signal) {
       let payload = {};
       try { payload = JSON.parse(data); } catch (_) {}
       if (type === 'token' && onToken) onToken(payload);
+      if (type === 'ui'    && onUi)    onUi(payload);
       if (type === 'done'  && onDone)  onDone(payload);
       if (type === 'error' && onError) onError(payload);
     }
   }
+}
+
+// ─── SamplesBrowser: shared two-pane / stacked sample viewer ──────────────────
+// Used by the study modal (layout='two-pane', fields fetched on demand from API)
+// and by the inline /report chat bubble (layout='stacked', fields embedded per row).
+function SamplesBrowser({ samples, totalSamples, layout, fetchFields }) {
+  const [activeId, setActiveId] = useState(null);
+  const [activeFields, setActiveFields] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const onRowClick = async (s) => {
+    if (activeId === s.sample_id) {
+      setActiveId(null); setActiveFields(null); return;
+    }
+    setActiveId(s.sample_id);
+    if (s.fields && Object.keys(s.fields).length) {
+      setActiveFields(s.fields);
+      return;
+    }
+    if (fetchFields) {
+      setLoading(true);
+      try { setActiveFields(await fetchFields(s.sample_id)); }
+      catch (_) { setActiveFields(null); }
+      finally { setLoading(false); }
+    }
+  };
+
+  if (!samples || samples.length === 0) {
+    return <p style={{color:'var(--text-3)', fontSize:'0.85rem'}}>No samples found.</p>;
+  }
+
+  const isStacked = layout === 'stacked';
+  const tableEl = (
+    <div className="samples-table-wrap" style={isStacked ? null : {flex:'0 0 auto', maxWidth:'55%'}}>
+      <table className="prep-table">
+        <thead>
+          <tr><th>Sample ID</th><th>Anonymized Name</th><th>Env Package</th><th>Collection Date</th></tr>
+        </thead>
+        <tbody>
+          {samples.map(s => {
+            const f = s.fields || {};
+            const collectionDate = s.collection_timestamp
+              || f.collection_timestamp || f.collection_date || '';
+            return (
+              <tr key={s.sample_id}
+                  onClick={() => onRowClick(s)}
+                  style={{cursor:'pointer', background: activeId === s.sample_id ? 'var(--accent-bg,#f0f4ff)' : ''}}>
+                <td>{s.sample_id}</td>
+                <td>{s.anonymized_name || f.anonymized_name || '—'}</td>
+                <td>{s.env_package || f.env_package || '—'}</td>
+                <td>{collectionDate ? String(collectionDate).slice(0, 10) : '—'}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  const detailEl = loading ? (
+    <div style={{flex:1, color:'var(--text-3)', fontSize:'0.85rem', paddingTop:'0.5rem'}}>Loading…</div>
+  ) : activeFields ? (
+    <div className="sample-preview-card">
+      <div className="sample-preview-header">
+        <span>{activeId}</span>
+        <button className="sample-preview-close" onClick={() => { setActiveId(null); setActiveFields(null); }}>✕</button>
+      </div>
+      <div className="sample-preview-body">
+        {Object.entries(activeFields)
+          .filter(([,v]) => v != null && v !== '')
+          .sort(([a],[b]) => a.localeCompare(b))
+          .map(([k,v]) => (
+            <div key={k} className="sample-preview-row">
+              <span className="sample-preview-key">{k}</span>
+              <span className="sample-preview-val">{String(v)}</span>
+            </div>
+          ))}
+      </div>
+    </div>
+  ) : null;
+
+  if (isStacked) {
+    return (
+      <div className="samples-browser-stacked">
+        {tableEl}
+        {detailEl}
+      </div>
+    );
+  }
+  return (
+    <div style={{display:'flex', gap:'1rem', alignItems:'flex-start'}}>
+      {tableEl}
+      {detailEl}
+    </div>
+  );
+}
+
+// Inline chat bubble for /report results — uses the embedded payload.
+function SamplesReportBubble({ ui }) {
+  if (!ui) return null;
+  const { header = {}, samples = [], study_id } = ui;
+  return (
+    <div className="msg-bubble samples-report-bubble">
+      <div className="samples-report-header">
+        <div className="samples-report-title">Study {study_id}: {header.study_title || 'Untitled study'}</div>
+        <div className="samples-report-meta">
+          {header.pi_name ? <span>PI: {header.pi_name}</span> : null}
+          {header.num_samples != null ? <span>{header.num_samples} samples</span> : null}
+          {header.data_types ? <span>{header.data_types}</span> : null}
+          {header.num_preps != null ? <span>{header.num_preps} preps</span> : null}
+        </div>
+      </div>
+      <SamplesBrowser samples={samples} totalSamples={header.num_samples} layout="stacked" />
+    </div>
+  );
 }
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
@@ -86,8 +202,6 @@ function App() {
   const [modalStudy,       setModalStudy]       = useState(null);
   const [modalDetail,      setModalDetail]      = useState(null);  // {preps, artifacts} or null
   const [modalDetailLoading, setModalDetailLoading] = useState(false);
-  const [samplePreview,        setSamplePreview]        = useState(null);  // {sample_id, fields}
-  const [samplePreviewLoading, setSamplePreviewLoading] = useState(false);
 
   const abortRef      = useRef(null);
   const taRef         = useRef(null);
@@ -132,6 +246,8 @@ function App() {
   const fetchProjectDetail = async (pid) => {
     const res = await apiFetch(`/projects/${pid}?user_id=${USER_ID}`);
     if (res.ok) setOpenProject(await res.json());
+    // Fire-and-forget warm-cache for full sample metadata
+    apiPost(`/projects/${pid}/preload`, { user_id: USER_ID }).catch(() => {});
   };
 
   const loadGlobalChats = async () => {
@@ -152,7 +268,16 @@ function App() {
       : await apiFetch(`/global-chats/${chatId}?user_id=${USER_ID}`);
     if (res.ok) {
       const d = await res.json();
-      setChatCache(prev => ({ ...prev, [chatId]: { messages: d.messages || [], title: d.title, pinnedStudies: d.pinned_studies || [] } }));
+      const messages = (d.messages || []).map(m => m.ui_payload ? { ...m, ui: m.ui_payload } : m);
+      setChatCache(prev => ({
+        ...prev,
+        [chatId]: {
+          messages,
+          title: d.title,
+          pinnedStudies: d.pinned_studies || [],
+          totalStudiesInProject: d.total_studies_in_project,
+        },
+      }));
     }
   };
 
@@ -310,7 +435,15 @@ function App() {
           if (!res.ok) throw new Error('Failed to create chat');
           const chat = await res.json();
           chatId = chat.chat_id;
-          setChatCache(prev => ({ ...prev, [chatId]: { messages: [], title: displayMsg.slice(0, 60) } }));
+          setChatCache(prev => ({
+            ...prev,
+            [chatId]: {
+              messages: [],
+              title: displayMsg.slice(0, 60),
+              pinnedStudies: chat.pinned_studies || [],
+              totalStudiesInProject: chat.total_studies_in_project,
+            },
+          }));
           setView(v => ({ ...v, chatId }));
         }
         optimisticAppend(chatId, displayMsg);
@@ -325,6 +458,7 @@ function App() {
         if (!res.ok || !res.body) throw new Error('Stream failed');
         await parseSSE(res, {
           onToken: ({ token }) => patchLast(chatId, m => ({ ...m, content: (m.content||'') + (token||'') })),
+          onUi: (payload) => patchLast(chatId, m => ({ ...m, ui: payload, content: '' })),
           onDone: () => {
             const title = displayMsg.slice(0, 60);
             applyStreamDone(chatId, title, reportStudyId);
@@ -361,6 +495,7 @@ function App() {
         if (!res.ok || !res.body) throw new Error('Stream failed');
         await parseSSE(res, {
           onToken: ({ token }) => patchLast(chatId, m => ({ ...m, content: (m.content||'') + (token||'') })),
+          onUi: (payload) => patchLast(chatId, m => ({ ...m, ui: payload, content: '' })),
           onDone: () => {
             const title = displayMsg.slice(0, 60);
             applyStreamDone(chatId, title, reportStudyId);
@@ -381,7 +516,7 @@ function App() {
     modalAbortRef.current?.abort();
     const ctrl = new AbortController();
     modalAbortRef.current = ctrl;
-    setModalStudy(study); setModalDetail(null); setModalDetailLoading(true); setSamplePreview(null);
+    setModalStudy(study); setModalDetail(null); setModalDetailLoading(true);
     try {
       const res = await apiFetch(`/studies/${study.study_id}/detail`, { signal: ctrl.signal });
       if (res.ok && !ctrl.signal.aborted) { const d = await res.json(); setModalDetail(d); }
@@ -389,19 +524,9 @@ function App() {
     if (!ctrl.signal.aborted) setModalDetailLoading(false);
   };
 
-  const fetchSamplePreview = async (studyId, sampleId) => {
-    if (samplePreview?.sample_id === sampleId) { setSamplePreview(null); return; }
-    setSamplePreviewLoading(true);
-    try {
-      const res = await apiFetch(`/studies/${studyId}/samples/${encodeURIComponent(sampleId)}`);
-      if (res.ok) setSamplePreview(await res.json());
-    } catch (_) {}
-    setSamplePreviewLoading(false);
-  };
-
   const closeModal = () => {
     modalAbortRef.current?.abort();
-    setModalStudy(null); setModalDetail(null); setSamplePreview(null);
+    setModalStudy(null); setModalDetail(null);
   };
 
   // ─── enrich all project studies from Qiita ──────────────────────────────────
@@ -766,7 +891,9 @@ function App() {
                 ) : (
                   activeMsgs.map((m, i) => (
                     <div key={i} className={`msg-row ${m.role}`}>
-                      {m.role === 'assistant' ? (
+                      {m.role === 'assistant' && m.ui?.kind === 'samples_report' ? (
+                        <SamplesReportBubble ui={m.ui} />
+                      ) : m.role === 'assistant' ? (
                         <div
                           className={`msg-bubble${m.isStreaming ? ' streaming' : ''}`}
                           dangerouslySetInnerHTML={{
@@ -808,6 +935,14 @@ function App() {
                   >×</button>
                 </span>
               ))}
+              {(() => {
+                const cur = chatCache[view.chatId] || {};
+                const pinned = (cur.pinnedStudies || []).length;
+                const total = cur.totalStudiesInProject;
+                return (total != null && total > pinned) ? (
+                  <span className="composer-pins-hint">{pinned} of {total} studies in context</span>
+                ) : null;
+              })()}
             </div>
           )}
           <div className={`composer ${!isChat ? 'muted' : ''}`}>
@@ -891,53 +1026,17 @@ function App() {
             {!modalDetailLoading && modalDetail && (
               <div className="modal-section">
                 <h4>Samples{modalDetail.total_samples != null ? ` (${modalDetail.total_samples} total${modalDetail.total_samples > 200 ? ', showing first 200' : ''})` : ''}</h4>
-                {(modalDetail.samples || []).length === 0 ? (
-                  <p style={{color:'var(--text-3)', fontSize:'0.85rem'}}>No samples found.</p>
-                ) : (
-                  <div style={{display:'flex', gap:'1rem', alignItems:'flex-start'}}>
-                    <div className="samples-table-wrap" style={{flex:'0 0 auto', maxWidth:'55%'}}>
-                      <table className="prep-table">
-                        <thead>
-                          <tr><th>Sample ID</th><th>Anonymized Name</th><th>Env Package</th><th>Collection Date</th></tr>
-                        </thead>
-                        <tbody>
-                          {modalDetail.samples.map(s => (
-                            <tr key={s.sample_id}
-                                onClick={() => fetchSamplePreview(modalStudy.study_id, s.sample_id)}
-                                style={{cursor:'pointer', background: samplePreview?.sample_id === s.sample_id ? 'var(--accent-bg,#f0f4ff)' : ''}}>
-                              <td>{s.sample_id}</td>
-                              <td>{s.anonymized_name || '—'}</td>
-                              <td>{s.env_package || '—'}</td>
-                              <td>{s.collection_timestamp ? s.collection_timestamp.slice(0, 10) : '—'}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                    {samplePreviewLoading && (
-                      <div style={{flex:1, color:'var(--text-3)', fontSize:'0.85rem', paddingTop:'0.5rem'}}>Loading…</div>
-                    )}
-                    {!samplePreviewLoading && samplePreview && (
-                      <div className="sample-preview-card">
-                        <div className="sample-preview-header">
-                          <span>{samplePreview.sample_id}</span>
-                          <button className="sample-preview-close" onClick={() => setSamplePreview(null)}>✕</button>
-                        </div>
-                        <div className="sample-preview-body">
-                          {Object.entries(samplePreview.fields)
-                            .filter(([,v]) => v != null && v !== '')
-                            .sort(([a],[b]) => a.localeCompare(b))
-                            .map(([k,v]) => (
-                              <div key={k} className="sample-preview-row">
-                                <span className="sample-preview-key">{k}</span>
-                                <span className="sample-preview-val">{String(v)}</span>
-                              </div>
-                            ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
+                <SamplesBrowser
+                  samples={modalDetail.samples || []}
+                  totalSamples={modalDetail.total_samples}
+                  layout="two-pane"
+                  fetchFields={async (sampleId) => {
+                    const res = await apiFetch(`/studies/${modalStudy.study_id}/samples/${encodeURIComponent(sampleId)}`);
+                    if (!res.ok) return null;
+                    const d = await res.json();
+                    return d.fields || null;
+                  }}
+                />
               </div>
             )}
 

@@ -167,6 +167,13 @@ def _create_schema(conn):
     except Exception:
         pass  # column already exists
 
+    # Migrate chat-message tables to add ui_payload (structured render data, e.g. inline samples report)
+    for tbl in ("project_chat_messages", "global_chat_messages"):
+        try:
+            conn.execute(f"ALTER TABLE {tbl} ADD COLUMN ui_payload TEXT")
+        except Exception:
+            pass  # column already exists
+
 
 def _mark_migration(conn):
     conn.execute(
@@ -351,17 +358,26 @@ def _load_project_studies(conn, project_id):
     return [_as_dict(r) for r in rows]
 
 
+def _decode_ui(value):
+    if not value:
+        return None
+    try:
+        return json.loads(value)
+    except Exception:
+        return None
+
+
 def _load_project_chat_messages(conn, chat_id):
     rows = conn.execute(
         """
-        SELECT role, content, created_at
+        SELECT role, content, ui_payload, created_at
         FROM project_chat_messages
         WHERE chat_id = ?
         ORDER BY id ASC
         """,
         (chat_id,),
     ).fetchall()
-    return [_as_dict(r) for r in rows]
+    return [{**_as_dict(r), "ui_payload": _decode_ui(r["ui_payload"])} for r in rows]
 
 
 def _load_project_chats(conn, project_id):
@@ -379,13 +395,15 @@ def _load_project_chats(conn, project_id):
     chat_ids = [r["chat_id"] for r in rows]
     placeholders = ",".join("?" * len(chat_ids))
     msg_rows = conn.execute(
-        f"SELECT chat_id, role, content, created_at FROM project_chat_messages "
+        f"SELECT chat_id, role, content, ui_payload, created_at FROM project_chat_messages "
         f"WHERE chat_id IN ({placeholders}) ORDER BY id ASC",
         chat_ids,
     ).fetchall()
     messages_by_chat = {}
     for msg in msg_rows:
-        messages_by_chat.setdefault(msg["chat_id"], []).append(_as_dict(msg))
+        messages_by_chat.setdefault(msg["chat_id"], []).append(
+            {**_as_dict(msg), "ui_payload": _decode_ui(msg["ui_payload"])}
+        )
     return [
         {**_as_dict(row), "messages": messages_by_chat.get(row["chat_id"], [])}
         for row in rows
@@ -568,6 +586,11 @@ def get_chat(project_id: str, user_id: str, chat_id: str):
         chat = _as_dict(row)
         chat["messages"] = _load_project_chat_messages(conn, chat_id)
         chat["pinned_studies"] = _load_pinned_studies(conn, chat_id, SCOPE_PROJECT)
+        total = conn.execute(
+            "SELECT COUNT(1) AS c FROM project_studies WHERE project_id = ?",
+            (project_id,),
+        ).fetchone()
+        chat["total_studies_in_project"] = int(total["c"]) if total else 0
         return chat
 
 
@@ -594,7 +617,14 @@ def create_chat(project_id: str, user_id: str, first_message: str = None):
     return get_chat(project_id, resolved_user, chat_id)
 
 
-def append_chat_messages(project_id: str, user_id: str, chat_id: str, user_content: str, assistant_content: str):
+def append_chat_messages(
+    project_id: str,
+    user_id: str,
+    chat_id: str,
+    user_content: str,
+    assistant_content: str,
+    assistant_ui_payload: dict = None,
+):
     resolved_user = (user_id or "").strip() or "default"
     with _conn() as conn:
         exists = conn.execute(
@@ -609,9 +639,10 @@ def append_chat_messages(project_id: str, user_id: str, chat_id: str, user_conte
             "INSERT INTO project_chat_messages(chat_id, role, content, created_at) VALUES(?, 'user', ?, ?)",
             (chat_id, user_content or "", now),
         )
+        ui_json = json.dumps(assistant_ui_payload) if assistant_ui_payload else None
         conn.execute(
-            "INSERT INTO project_chat_messages(chat_id, role, content, created_at) VALUES(?, 'assistant', ?, ?)",
-            (chat_id, assistant_content or "", now),
+            "INSERT INTO project_chat_messages(chat_id, role, content, ui_payload, created_at) VALUES(?, 'assistant', ?, ?, ?)",
+            (chat_id, assistant_content or "", ui_json, now),
         )
 
         title = exists["title"] or "New chat"
@@ -664,10 +695,10 @@ def list_global_chats(user_id: str):
 
 def _load_global_messages(conn, chat_id):
     rows = conn.execute(
-        "SELECT role, content, created_at FROM global_chat_messages WHERE chat_id = ? ORDER BY id ASC",
+        "SELECT role, content, ui_payload, created_at FROM global_chat_messages WHERE chat_id = ? ORDER BY id ASC",
         (chat_id,),
     ).fetchall()
-    return [_as_dict(r) for r in rows]
+    return [{**_as_dict(r), "ui_payload": _decode_ui(r["ui_payload"])} for r in rows]
 
 
 def get_global_chat(user_id: str, chat_id: str):
@@ -699,7 +730,13 @@ def create_global_chat(user_id: str, title: str = None):
     return get_global_chat(resolved_user, chat_id)
 
 
-def append_global_chat_messages(user_id: str, chat_id: str, user_content: str, assistant_content: str):
+def append_global_chat_messages(
+    user_id: str,
+    chat_id: str,
+    user_content: str,
+    assistant_content: str,
+    assistant_ui_payload: dict = None,
+):
     resolved_user = (user_id or "").strip() or "default"
     with _conn() as conn:
         row = conn.execute(
@@ -714,9 +751,10 @@ def append_global_chat_messages(user_id: str, chat_id: str, user_content: str, a
             "INSERT INTO global_chat_messages(chat_id, role, content, created_at) VALUES(?, 'user', ?, ?)",
             (chat_id, user_content or "", now),
         )
+        ui_json = json.dumps(assistant_ui_payload) if assistant_ui_payload else None
         conn.execute(
-            "INSERT INTO global_chat_messages(chat_id, role, content, created_at) VALUES(?, 'assistant', ?, ?)",
-            (chat_id, assistant_content or "", now),
+            "INSERT INTO global_chat_messages(chat_id, role, content, ui_payload, created_at) VALUES(?, 'assistant', ?, ?, ?)",
+            (chat_id, assistant_content or "", ui_json, now),
         )
 
         title = row["title"] or "New chat"

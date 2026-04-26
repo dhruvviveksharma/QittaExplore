@@ -493,6 +493,54 @@ input, textarea { font-family: var(--sans); }
   cursor: pointer;
   padding: 0 4px;
 }
+.composer-pins-hint {
+  margin-left: 8px;
+  color: var(--text-3);
+  font-size: 11px;
+  font-style: italic;
+}
+
+/* Inline /report sample browser bubble */
+.samples-report-bubble {
+  width: 100%;
+  max-width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m, 8px);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.samples-report-header {
+  border-bottom: 1px solid var(--border-soft);
+  padding-bottom: 8px;
+}
+.samples-report-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+}
+.samples-report-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 4px;
+  color: var(--text-3);
+  font-size: 11px;
+}
+.samples-browser-stacked {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.samples-browser-stacked .samples-table-wrap {
+  max-width: 100% !important;
+  flex: 0 0 auto;
+}
+.samples-browser-stacked .sample-preview-card {
+  width: 100%;
+}
 .composer-pin-x:hover { color: var(--accent); }
 
 /* ── Browse panel ────────────────────────────────────────────── */
