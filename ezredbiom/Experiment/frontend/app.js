@@ -442,11 +442,14 @@ function SamplesReportBubble({ ui, messageKey }) {
       <div className="samples-report-header">
         <div className="samples-report-title">Study {study_id}: {header.study_title || 'Untitled study'}</div>
         <div className="samples-report-meta">
-          {header.pi_name ? <span>PI: {header.pi_name}</span> : null}
+          {header.pi_name ? <span>PI: {header.pi_name}{header.pi_affiliation ? ` (${header.pi_affiliation})` : ''}</span> : null}
           {numSamples != null ? <span>{numSamples} samples</span> : null}
           {header.data_types ? <span>{header.data_types}</span> : null}
           {header.num_preps != null ? <span>{header.num_preps} preps</span> : null}
         </div>
+        {header.study_abstract && (
+          <div className="samples-report-abstract">{header.study_abstract}</div>
+        )}
       </div>
 
       <CollapsibleSection
@@ -900,7 +903,7 @@ function App() {
       {/* ══════════════════ SIDEBAR ══════════════════ */}
       <aside className="sidebar">
         <div className="sidebar-header">
-          <div className="app-logo">Qiita<span>Explorer</span></div>
+          <div className="app-logo app-logo-home" onClick={() => setView({ type: 'browse' })}>Qiita<span>Explorer</span></div>
         </div>
 
         <div className="sidebar-body">
@@ -1224,12 +1227,16 @@ function App() {
                       {m.role === 'assistant' && m.ui?.kind === 'samples_report' ? (
                         <SamplesReportBubble ui={m.ui} messageKey={`${view.chatId}-${i}`} />
                       ) : m.role === 'assistant' ? (
+                        m.isStreaming && !m.content ? (
+                          <div className="msg-bubble"><div className="typing-dots"><span/><span/><span/></div></div>
+                        ) : (
                         <div
                           className={`msg-bubble${m.isStreaming ? ' streaming' : ''}`}
                           dangerouslySetInnerHTML={{
                             __html: DOMPurify.sanitize(marked.parse(m.content || ''))
                           }}
                         />
+                        )
                       ) : (
                         <div className="msg-bubble">{m.content}</div>
                       )}

@@ -762,6 +762,7 @@ def _build_samples_report_payload(study_id: int, sample_limit: int = REPORT_SAMP
         "header": {
             "study_id": study_id,
             "study_title": header.get("study_title") or "Untitled study",
+            "study_abstract": header.get("study_abstract"),
             "pi_name": header.get("pi_name"),
             "pi_affiliation": header.get("pi_affiliation"),
             "num_samples": header.get("num_samples"),

@@ -59,6 +59,8 @@ input, textarea { font-family: var(--sans); }
   letter-spacing: -0.01em;
 }
 .app-logo span { color: var(--accent); font-style: italic; }
+.app-logo-home { cursor: pointer; }
+.app-logo-home:hover { opacity: 0.75; }
 
 .sidebar-body {
   flex: 1;
@@ -421,6 +423,18 @@ input, textarea { font-family: var(--sans); }
 /* Streaming block-cursor via ::after — avoids children conflict with dangerouslySetInnerHTML */
 .msg-bubble.streaming::after { content: '▋'; color: var(--accent); animation: blink 1s steps(1) infinite; }
 
+/* Waiting-for-first-token dots */
+.typing-dots { display: flex; align-items: center; gap: 5px; padding: 6px 0; }
+.typing-dots span {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--text-3);
+  animation: tdot 1.2s ease-in-out infinite;
+}
+.typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+.typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes tdot { 0%,60%,100%{transform:scale(1);opacity:.4} 30%{transform:scale(1.35);opacity:1} }
+
 /* ── Composer ────────────────────────────────────────────────── */
 .composer-wrap {
   padding: 10px 20px 14px;
@@ -549,6 +563,14 @@ input, textarea { font-family: var(--sans); }
   margin-top: 4px;
   color: var(--text-3);
   font-size: 11px;
+}
+.samples-report-abstract {
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: var(--text-2, var(--muted));
+  line-height: 1.55;
+  max-height: 120px;
+  overflow-y: auto;
 }
 .samples-browser-stacked {
   display: flex;
