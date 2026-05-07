@@ -1,3 +1,6 @@
 # NoSQL databases (local state)
 carts.json
 projects.json
+projects.db
+*.db-shm
+*.db-wal

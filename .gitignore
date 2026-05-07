@@ -81,3 +81,17 @@ notebooks/resource-allocation/data
 qiita_db/support_files/patches/test_db_sql/91.sql
 
 *.env
+
+# Study data files
+*.qz
+*.qza
+*.qzv
+*.fastq.gz
+*.fastq
+*.fq.gz
+*.fq
+*.txt
+*.pdf
+test_data_studies/
+qiita_config.cfg
+src/qiita-spots

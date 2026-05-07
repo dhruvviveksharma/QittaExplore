@@ -1,0 +1,37 @@
+"""Re-export shim: aggregates sql_store_db, sql_store_crud, and sql_store_cache."""
+
+from sql_store_crud import (  # noqa: F401
+    list_projects,
+    create_project,
+    get_project,
+    update_project,
+    delete_project,
+    add_study_to_project,
+    remove_study_from_project,
+    list_chats,
+    get_chat,
+    create_chat,
+    append_chat_messages,
+    delete_chat,
+    list_global_chats,
+    get_global_chat,
+    create_global_chat,
+    append_global_chat_messages,
+    delete_global_chat,
+)
+
+from sql_store_cache import (  # noqa: F401
+    SCOPE_PROJECT,
+    SCOPE_GLOBAL,
+    PINNED_STUDIES_PER_CHAT_CAP,
+    upsert_project_study_summary,
+    get_project_context_summary,
+    upsert_project_context_summary,
+    update_project_study_data,
+    list_project_studies,
+    get_study_detail_cache,
+    upsert_study_detail_cache,
+    pin_study_to_chat,
+    unpin_study_from_chat,
+    list_pinned_studies,
+)

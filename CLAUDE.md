@@ -1,0 +1,17 @@
+# Memory
+
+## Me
+Dhruv (dhruvviveksharma@gmail.com)
+
+## Projects
+| Name | What |
+|------|------|
+| **qiita-web** | Local Qiita microbiome data analysis frontend. Studies stored in `test_data_studies/studies/{id}/` with sample_template, prep_template, and otu_table.biom |
+
+## Import Workflow
+Each study directory needs:
+- `sample_template_{id}.txt` — sample metadata (downloaded from Qiita study page)
+- `prep_template_{id}.txt` — prep metadata (from Qiita prep info page)
+- `otu_table.biom` — BIOM artifact (from Qiita artifact download)
+
+Load via `commands.sh` which calls: `qiita db load-study`, `qiita db load-sample-template`, `qiita db load-prep-template`, `qiita db load-artifact`
