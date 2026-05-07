@@ -1,4 +1,5 @@
 # backend/run.py
+import sys
 from flask import Flask
 from flask_cors import CORS
 from concurrent.futures import ThreadPoolExecutor
@@ -7,6 +8,11 @@ app = Flask(__name__)
 CORS(app)
 
 _bg_executor = ThreadPoolExecutor(max_workers=4)
+
+# When executed as __main__, sys.modules only contains this module under
+# '__main__'. Route files do `from run import app`, which would trigger a
+# second import of this file unless we also register it under 'run'.
+sys.modules.setdefault('run', sys.modules[__name__])
 
 # Import route modules to register their @app.route decorators.
 # These must come AFTER app and _bg_executor are defined.
