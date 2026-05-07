@@ -34,8 +34,9 @@ nosetests.xml
 .project
 .pydevproject
 
-# Config files
+# Config files (local secrets; track the Experiment app module explicitly)
 config.py
+!ezredbiom/Experiment/backend/config.py
 
 # OSX files
 .DS_Store
