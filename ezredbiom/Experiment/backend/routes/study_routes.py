@@ -1,0 +1,128 @@
+import json
+import traceback
+
+from flask import jsonify, request
+from qiita_db.sql_connection import TRN
+
+from run import app
+from services.llm import llm_query_to_sql
+from services.study_service import search_studies_with_sql
+from store import get_study_detail_cache, upsert_study_detail_cache
+from helpers.qiita_fetch import (
+    first_studies,
+    _fetch_prep_metadata_summary,
+    _fetch_study_samples,
+    _fetch_study_detail_from_qiita,
+    _fetch_sample_context_text,
+)
+
+
+@app.route('/api/studies/<int:study_id>/detail', methods=['GET'])
+def api_study_detail(study_id):
+    """Return prep templates, artifacts, and samples for a study (preps/artifacts cached)."""
+    cached = get_study_detail_cache(study_id)
+    if cached:
+        preps     = json.loads(cached.get("preps_json") or "[]")
+        artifacts = json.loads(cached.get("artifacts_json") or "[]")
+        cache_hit = True
+    else:
+        try:
+            preps, artifacts = _fetch_study_detail_from_qiita(study_id)
+            upsert_study_detail_cache(study_id, json.dumps(preps), json.dumps(artifacts))
+            cache_hit = False
+        except Exception as e:
+            traceback.print_exc()
+            return jsonify({"error": str(e)}), 500
+
+    for prep in preps:
+        pid = prep.get("prep_template_id")
+        if pid is not None:
+            prep.update(_fetch_prep_metadata_summary(pid))
+
+    samples, total_samples = _fetch_study_samples(study_id, limit=200)
+
+    if not (cached and cached.get("samples_context")):
+        samples_ctx = _fetch_sample_context_text(study_id)
+        if samples_ctx:
+            upsert_study_detail_cache(
+                study_id,
+                json.dumps(preps),
+                json.dumps(artifacts),
+                samples_context=samples_ctx,
+            )
+
+    return jsonify({
+        "study_id":      study_id,
+        "preps":         preps,
+        "artifacts":     artifacts,
+        "samples":       samples,
+        "total_samples": total_samples,
+        "cached":        cache_hit,
+    })
+
+
+@app.route('/api/studies/<int:study_id>/samples/<path:sample_id>', methods=['GET'])
+def api_sample_detail(study_id, sample_id):
+    """Return all metadata fields for a single sample."""
+    try:
+        with TRN:
+            TRN.add(
+                f"""
+                SELECT sample_values
+                FROM qiita.sample_{study_id}
+                WHERE sample_id = %s
+                  AND sample_id <> 'qiita_sample_column_names'
+                """,
+                [sample_id],
+            )
+            rows = TRN.execute_fetchindex()
+        if not rows:
+            return jsonify({'error': 'Sample not found'}), 404
+        fields = dict(rows[0][0])
+        fields.pop('qiita_study_id', None)
+        return jsonify({'sample_id': sample_id, 'fields': fields})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/search', methods=['POST'])
+def search():
+    try:
+        data        = request.get_json() or {}
+        user_query  = data.get('query', '')
+        if not user_query:
+            return jsonify({'error': 'Query is required'}), 400
+
+        sql_query   = llm_query_to_sql(user_query)
+        where_clause = sql_query.get('where_clause') or '1=1'
+        params       = sql_query.get('params') if isinstance(sql_query.get('params'), list) else []
+        results      = search_studies_with_sql(custom_sql_where=where_clause, params=params)
+
+        return jsonify({
+            'results':   results if isinstance(results, list) else [],
+            'sql_query': sql_query,
+            'count':     len(results) if isinstance(results, list) else 0,
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/health', methods=['GET'])
+def health():
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/api/studies/first', methods=['GET'])
+def api_first_studies():
+    try:
+        limit = request.args.get('limit', 20)
+        rows  = first_studies(limit=limit)
+        return jsonify({
+            "results": rows,
+            "count":   len(rows),
+            "limit":   max(1, min(100, int(limit) if str(limit).isdigit() else 20)),
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
