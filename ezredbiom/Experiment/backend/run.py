@@ -1,5 +1,14 @@
 # backend/run.py
 import sys
+import os
+
+# Ensure the backend directory is always first in sys.path so that local
+# modules (config, store, helpers/, routes/) are found even if the qiita
+# environment manipulates sys.path before our imports run.
+_BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
+
 from flask import Flask
 from flask_cors import CORS
 from concurrent.futures import ThreadPoolExecutor
