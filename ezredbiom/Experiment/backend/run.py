@@ -422,13 +422,17 @@ def llm_chat_stream(messages, study_context_text: str, system_prompt: str = None
         messages=_build_api_messages(messages, study_context_text, system_prompt),
         stream=True,
     )
+    yielded = False
     for chunk in stream:
         if not chunk.choices:
             continue
         delta = chunk.choices[0].delta
-        token = getattr(delta, "content", None)
+        token = getattr(delta, "content", None) or getattr(delta, "reasoning_content", None)
         if token:
             yield token
+            yielded = True
+    if not yielded:
+        yield "(No response received from model)"
 
 
 def first_studies(limit=20):

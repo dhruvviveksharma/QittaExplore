@@ -1233,7 +1233,7 @@ function App() {
                         <div
                           className={`msg-bubble${m.isStreaming ? ' streaming' : ''}`}
                           dangerouslySetInnerHTML={{
-                            __html: DOMPurify.sanitize(marked.parse(m.content || ''))
+                            __html: DOMPurify.sanitize(marked.parse(m.content || (!m.isStreaming ? '*No response*' : '')))
                           }}
                         />
                         )
