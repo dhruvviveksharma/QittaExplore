@@ -9,11 +9,13 @@ _BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-from flask import Flask
+from flask import Flask, send_from_directory
 from flask_cors import CORS
 from concurrent.futures import ThreadPoolExecutor
 
-app = Flask(__name__)
+_FRONTEND_DIR = os.path.join(os.path.dirname(_BACKEND_DIR), 'frontend')
+
+app = Flask(__name__, static_folder=_FRONTEND_DIR, static_url_path='')
 CORS(app)
 
 _bg_executor = ThreadPoolExecutor(max_workers=4)
@@ -29,6 +31,12 @@ import routes.study_routes        # noqa: F401, E402
 import routes.project_routes      # noqa: F401, E402
 import routes.chat_routes         # noqa: F401, E402
 import routes.global_chat_routes  # noqa: F401, E402
+
+
+@app.route('/')
+def _index():
+    return send_from_directory(_FRONTEND_DIR, 'index.html')
+
 
 if __name__ == '__main__':
     print("QIITA SEARCH API -- http://localhost:5001")
