@@ -14,8 +14,9 @@ def _project_exists(conn, project_id, user_id):
     return row is not None
 
 
-def list_projects(user_id: str):
+def list_projects(user_id: str, limit: int = 100):
     user_id = (user_id or "").strip() or "default"
+    limit = max(1, min(500, int(limit)))
     with _conn() as conn:
         rows = conn.execute(
             """
@@ -25,8 +26,9 @@ def list_projects(user_id: str):
             FROM projects p
             WHERE p.user_id = ?
             ORDER BY p.updated_at DESC, p.created_at DESC
+            LIMIT ?
             """,
-            (user_id,),
+            (user_id, limit),
         ).fetchall()
     return [_as_dict(r) for r in rows]
 
@@ -240,8 +242,23 @@ def remove_study_from_project(project_id: str, user_id: str, study_id):
     return get_project(project_id, resolved_user)
 
 
-def list_chats(project_id: str, user_id: str):
+def get_project_studies_only(project_id: str):
+    """Lightweight fetch — returns only the studies list, skipping chats and messages."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT project_id, user_id, name, created_at, updated_at FROM projects WHERE project_id = ?",
+            (project_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        project = _as_dict(row)
+        project["studies"] = _load_project_studies(conn, project_id)
+        return project
+
+
+def list_chats(project_id: str, user_id: str, limit: int = 200):
     resolved_user = (user_id or "").strip() or "default"
+    limit = max(1, min(500, int(limit)))
     with _conn() as conn:
         if not _project_exists(conn, project_id, resolved_user):
             return []
@@ -252,8 +269,9 @@ def list_chats(project_id: str, user_id: str):
             FROM project_chats pc
             WHERE pc.project_id = ? AND pc.user_id = ?
             ORDER BY pc.updated_at DESC, pc.created_at DESC
+            LIMIT ?
             """,
-            (project_id, resolved_user),
+            (project_id, resolved_user, limit),
         ).fetchall()
     return [_as_dict(r) for r in rows]
 
@@ -384,8 +402,9 @@ def delete_chat(project_id: str, user_id: str, chat_id: str):
     return get_project(project_id, resolved_user)
 
 
-def list_global_chats(user_id: str):
+def list_global_chats(user_id: str, limit: int = 200):
     resolved_user = (user_id or "").strip() or "default"
+    limit = max(1, min(500, int(limit)))
     with _conn() as conn:
         rows = conn.execute(
             """
@@ -394,8 +413,9 @@ def list_global_chats(user_id: str):
             FROM global_chats gc
             WHERE gc.user_id = ?
             ORDER BY gc.updated_at DESC, gc.created_at DESC
+            LIMIT ?
             """,
-            (resolved_user,),
+            (resolved_user, limit),
         ).fetchall()
     return [_as_dict(r) for r in rows]
 

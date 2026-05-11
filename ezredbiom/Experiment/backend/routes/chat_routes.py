@@ -10,6 +10,7 @@ from store import (
     delete_chat,
     get_chat,
     get_project,
+    get_project_studies_only,
     list_chats,
     list_pinned_studies,
     pin_study_to_chat,
@@ -81,7 +82,7 @@ def api_chat_message(project_id, chat_id):
     chat = get_chat(project_id, user_id, chat_id)
     if not chat:
         return jsonify({'error': 'Chat not found'}), 404
-    proj      = get_project(project_id, user_id)
+    proj      = get_project_studies_only(project_id)
     study_ctx = _build_project_study_context(proj, user_id=user_id)
     messages  = chat.get('messages') or []
     full_msgs = [{"role": m.get("role"), "content": m.get("content")} for m in messages]
@@ -110,7 +111,7 @@ def api_chat_message_stream(project_id, chat_id):
     if not chat:
         return jsonify({'error': 'Chat not found'}), 404
 
-    proj        = get_project(project_id, user_id)
+    proj        = get_project_studies_only(project_id)
     study_ctx   = _build_project_study_context(proj, user_id=user_id)
     pinned_ctx  = _build_pinned_reports_context(chat.get("pinned_studies") or []) if report_study_id is None else None
     combined_ctx = "\n\n".join(x for x in (study_ctx, pinned_ctx) if x) or None

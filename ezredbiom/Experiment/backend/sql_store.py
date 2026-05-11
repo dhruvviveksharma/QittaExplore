@@ -4,6 +4,7 @@ from sql_store_crud import (  # noqa: F401
     list_projects,
     create_project,
     get_project,
+    get_project_studies_only,
     update_project,
     delete_project,
     add_study_to_project,

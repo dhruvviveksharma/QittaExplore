@@ -16,6 +16,7 @@ from sql_store import (  # noqa: F401
     get_chat,
     get_global_chat,
     get_project,
+    get_project_studies_only,
     get_project_context_summary,
     get_study_detail_cache,
     list_chats,

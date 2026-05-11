@@ -442,6 +442,7 @@ def _fetch_study_detail_from_qiita(study_id: int):
         JOIN qiita.data_directory dd ON f.data_directory_id = dd.data_directory_id
         WHERE spt.study_id = %s
         ORDER BY pt.prep_template_id, a.artifact_id
+        LIMIT 500
         """,
         [study_id],
     )

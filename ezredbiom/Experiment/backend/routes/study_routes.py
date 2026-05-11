@@ -1,5 +1,6 @@
 import json
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 
 from flask import jsonify, request
 from qiita_db.sql_connection import TRN
@@ -34,10 +35,15 @@ def api_study_detail(study_id):
             traceback.print_exc()
             return jsonify({"error": str(e)}), 500
 
-    for prep in preps:
-        pid = prep.get("prep_template_id")
-        if pid is not None:
-            prep.update(_fetch_prep_metadata_summary(pid))
+    prep_ids = [p.get("prep_template_id") for p in preps if p.get("prep_template_id") is not None]
+    if prep_ids:
+        with ThreadPoolExecutor(max_workers=min(len(prep_ids), 8)) as pool:
+            meta_results = list(pool.map(_fetch_prep_metadata_summary, prep_ids))
+        id_to_meta = dict(zip(prep_ids, meta_results))
+        for prep in preps:
+            pid = prep.get("prep_template_id")
+            if pid is not None and pid in id_to_meta:
+                prep.update(id_to_meta[pid])
 
     samples, total_samples = _fetch_study_samples(study_id, limit=200)
 

@@ -6,14 +6,11 @@ from config import (
     client,
     CHAT_SYSTEM_PROMPT,
     PROJECT_CONTEXT_MAX_CHARS,
-    PROJECT_SUMMARY_GEN_LIMIT,
     GLOBAL_CONTEXT_MAX_CHARS,
 )
 from store import (
     get_project_context_summary,
     get_study_detail_cache,
-    upsert_project_context_summary,
-    upsert_project_study_summary,
     upsert_study_detail_cache,
 )
 
@@ -208,13 +205,8 @@ def _build_project_study_context(project: dict, user_id: str = "default"):
             overflow.append((studies[idx], block))
 
     summary_lines = []
-    generated     = 0
     for study, _block in overflow:
         summary = (study.get("summary_text") or "").strip()
-        if not summary and generated < PROJECT_SUMMARY_GEN_LIMIT and project_id:
-            summary = _generate_study_summary(study)
-            upsert_project_study_summary(project_id, user_id, study.get("study_id"), summary)
-            generated += 1
         if not summary:
             summary = _truncate(study.get("study_abstract") or "Not available", 240)
         summary_lines.append(
@@ -237,9 +229,6 @@ def _build_project_study_context(project: dict, user_id: str = "default"):
         source_updated_at  = project.get("updated_at")
         if cached and cached.get("summary_text") and cached.get("source_updated_at") == source_updated_at:
             project_summary = cached.get("summary_text")
-        else:
-            project_summary = _generate_project_summary(studies)
-            upsert_project_context_summary(project_id, user_id, project_summary, source_updated_at=source_updated_at)
 
     ids_line = ", ".join(str(s.get("study_id")) for s in studies[:60])
     fallback = (
