@@ -429,33 +429,41 @@ function renderApp(s) {
               <div className="modal-section"><h4>Contact</h4><p>{modalStudy.pi_email}</p></div>
             )}
 
-            <div className="modal-section">
-              <h4>Prep Templates</h4>
-              <PrepsTable detail={modalDetail} loading={modalDetailLoading} />
-            </div>
-
-            {!modalDetailLoading && modalDetail && (
-              <div className="modal-section">
-                <h4>Samples{modalDetail.total_samples != null ? ` (${modalDetail.total_samples} total${modalDetail.total_samples > 200 ? ', showing first 200' : ''})` : ''}</h4>
-                <SamplesBrowser
-                  samples={modalDetail.samples || []}
-                  totalSamples={modalDetail.total_samples}
-                  layout="two-pane"
-                  fetchFields={async (sampleId) => {
-                    const res = await apiFetch(`/studies/${modalStudy.study_id}/samples/${encodeURIComponent(sampleId)}`);
-                    if (!res.ok) return null;
-                    const d = await res.json();
-                    return d.fields || null;
-                  }}
-                />
+            {!modalDetailLoading && modalDetail?.isPrivate ? (
+              <div className="modal-section" style={{color:'#888', fontStyle:'italic'}}>
+                This is a private study and its data is not publicly available.
               </div>
-            )}
+            ) : (
+              <>
+                <div className="modal-section">
+                  <h4>Prep Templates</h4>
+                  <PrepsTable detail={modalDetail} loading={modalDetailLoading} />
+                </div>
 
-            {!modalDetailLoading && modalDetail && (
-              <div className="modal-section">
-                <h4>Artifacts</h4>
-                <ArtifactsTable detail={modalDetail} loading={modalDetailLoading} />
-              </div>
+                {!modalDetailLoading && modalDetail && (
+                  <div className="modal-section">
+                    <h4>Samples{modalDetail.total_samples != null ? ` (${modalDetail.total_samples} total${modalDetail.total_samples > 200 ? ', showing first 200' : ''})` : ''}</h4>
+                    <SamplesBrowser
+                      samples={modalDetail.samples || []}
+                      totalSamples={modalDetail.total_samples}
+                      layout="two-pane"
+                      fetchFields={async (sampleId) => {
+                        const res = await apiFetch(`/studies/${modalStudy.study_id}/samples/${encodeURIComponent(sampleId)}`);
+                        if (!res.ok) return null;
+                        const d = await res.json();
+                        return d.fields || null;
+                      }}
+                    />
+                  </div>
+                )}
+
+                {!modalDetailLoading && modalDetail && (
+                  <div className="modal-section">
+                    <h4>Artifacts</h4>
+                    <ArtifactsTable detail={modalDetail} loading={modalDetailLoading} />
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>

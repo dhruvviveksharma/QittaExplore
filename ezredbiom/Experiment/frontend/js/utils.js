@@ -20,6 +20,7 @@ async function fetchStudyDetail(studyId, { signal } = {}) {
   if (_studyDetailInflight.has(studyId)) return _studyDetailInflight.get(studyId);
   const p = (async () => {
     const res = await apiFetch(`/studies/${studyId}/detail`, signal ? { signal } : {});
+    if (res.status === 404) return { isPrivate: true };
     if (!res.ok) throw new Error(`detail ${res.status}`);
     const d = await res.json();
     _studyDetailCache.set(studyId, d);
