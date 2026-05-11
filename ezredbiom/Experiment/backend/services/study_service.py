@@ -46,7 +46,8 @@ def search_studies_with_sql(custom_sql_where="", params=None):
         LEFT JOIN qiita.study_artifact sa ON s.study_id = sa.study_id
         LEFT JOIN qiita.artifact a ON sa.artifact_id = a.artifact_id
         LEFT JOIN qiita.visibility v ON a.visibility_id = v.visibility_id
-        WHERE {custom_sql_where if custom_sql_where else '1=1'}
+        WHERE v.visibility = 'public'
+          AND ({custom_sql_where if custom_sql_where else '1=1'})
         ORDER BY s.study_id
         LIMIT 50
         """

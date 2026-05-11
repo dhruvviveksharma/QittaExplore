@@ -11,6 +11,7 @@ from services.study_service import search_studies_with_sql
 from store import get_study_detail_cache, upsert_study_detail_cache
 from helpers.qiita_fetch import (
     first_studies,
+    is_study_public,
     _fetch_prep_metadata_summary,
     _fetch_study_samples,
     _fetch_study_detail_from_qiita,
@@ -21,6 +22,8 @@ from helpers.qiita_fetch import (
 @app.route('/api/studies/<int:study_id>/detail', methods=['GET'])
 def api_study_detail(study_id):
     """Return prep templates, artifacts, and samples for a study (preps/artifacts cached)."""
+    if not is_study_public(study_id):
+        return jsonify({'error': 'Study not found or not public'}), 404
     cached = get_study_detail_cache(study_id)
     if cached:
         preps     = json.loads(cached.get("preps_json") or "[]")
