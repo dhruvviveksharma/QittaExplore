@@ -23,6 +23,8 @@ function useAppState() {
   const [modalStudy,         setModalStudy]         = useState(null);
   const [modalDetail,        setModalDetail]        = useState(null);
   const [modalDetailLoading, setModalDetailLoading] = useState(false);
+  const [projDetailLoading,  setProjDetailLoading]  = useState(false);
+  const [chatLoading,        setChatLoading]        = useState(false);
 
   const abortRef      = useRef(null);
   const taRef         = useRef(null);
@@ -62,9 +64,14 @@ function useAppState() {
   };
 
   const fetchProjectDetail = async (pid) => {
-    const res = await apiFetch(`/projects/${pid}?user_id=${USER_ID}`);
-    if (res.ok) setOpenProject(await res.json());
-    apiPost(`/projects/${pid}/preload`, { user_id: USER_ID }).catch(() => {});
+    setProjDetailLoading(true);
+    try {
+      const res = await apiFetch(`/projects/${pid}?user_id=${USER_ID}`);
+      if (res.ok) setOpenProject(await res.json());
+      apiPost(`/projects/${pid}/preload`, { user_id: USER_ID }).catch(() => {});
+    } finally {
+      setProjDetailLoading(false);
+    }
   };
 
   const loadGlobalChats = async () => {
@@ -131,15 +138,23 @@ function useAppState() {
 
   // ─── chat navigation ──────────────────────────────────────────────────────────
   const openProjChat = async (projId, chatId) => {
-    await hydrateChatCache('project-chat', projId, chatId);
     setView({ type: 'project-chat', projId, chatId });
     setCompErr('');
+    if (!chatCache[chatId]) {
+      setChatLoading(true);
+      try { await hydrateChatCache('project-chat', projId, chatId); }
+      finally { setChatLoading(false); }
+    }
   };
 
   const openGlobChat = async (chatId) => {
-    await hydrateChatCache('global-chat', null, chatId);
     setView({ type: 'global-chat', chatId });
     setCompErr('');
+    if (!chatCache[chatId]) {
+      setChatLoading(true);
+      try { await hydrateChatCache('global-chat', null, chatId); }
+      finally { setChatLoading(false); }
+    }
   };
 
   const newProjChat = async (projId) => {
@@ -389,6 +404,7 @@ function useAppState() {
     ctxStudies, showNewProj, newProjName,
     input, sending, compErr,
     modalStudy, modalDetail, modalDetailLoading,
+    projDetailLoading, chatLoading,
     // refs
     taRef, bottomRef,
     // handlers

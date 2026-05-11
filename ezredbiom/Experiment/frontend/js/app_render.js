@@ -9,6 +9,7 @@ function renderApp(s) {
     ctxStudies, showNewProj, newProjName,
     input, sending, compErr,
     modalStudy, modalDetail, modalDetailLoading,
+    projDetailLoading, chatLoading,
     taRef, bottomRef,
     createProject, deleteProject, addStudyToProject, removeStudy,
     openProjChat, openGlobChat, newProjChat, deleteProjChat, newGlobChat, deleteGlobChat,
@@ -52,6 +53,11 @@ function renderApp(s) {
 
               {openProjId === p.project_id && (
                 <div className="folder-expanded">
+                  {projDetailLoading && !openProject && (
+                    <div className="folder-loading">
+                      <div className="typing-dots"><span/><span/><span/></div>
+                    </div>
+                  )}
                   <button className="folder-new-chat-btn" onClick={() => newProjChat(p.project_id)}>
                     <span className="fnc-plus">+</span>
                     <span className="fnc-text">New chat in {p.name}</span>
@@ -306,7 +312,9 @@ function renderApp(s) {
               )}
 
               <div className={`chat-messages${activeMsgs.some(m => m.ui?.kind === 'samples_report') ? ' chat-messages-wide' : ''}`}>
-                {activeMsgs.length === 0 ? (
+                {activeMsgs.length === 0 && chatLoading ? (
+                  <div className="state-loading"><div className="spinner" /></div>
+                ) : activeMsgs.length === 0 ? (
                   <div className="chat-empty">
                     <div className="chat-empty-title">
                       {view.type === 'project-chat'

@@ -80,6 +80,7 @@ input, textarea { font-family: var(--sans); }
   padding: 8px 6px 4px;
 }
 .sb-loading { font-size: 12px; color: var(--text-3); padding: 4px 8px; }
+.folder-loading { padding: 8px 16px; }
 
 /* ── Folder rows ─────────────────────────────────────────────── */
 .folder-row {
