@@ -23,6 +23,7 @@ from helpers.qiita_fetch import (
     _fetch_sample_context_text,
     _get_or_fetch_full_samples,
     _qiita_fetch,
+    is_study_public,
 )
 from helpers.llm_helpers import (
     _generate_project_summary,
@@ -132,6 +133,9 @@ def api_add_study(project_id):
     study   = data.get('study')
     if not study or study.get('study_id') is None:
         return jsonify({'error': 'study with study_id required'}), 400
+
+    if not is_study_public(study.get('study_id')):
+        return jsonify({'error': 'Study is not public and cannot be added'}), 403
 
     proj = add_study_to_project(project_id, user_id, study)
     if not proj:

@@ -75,6 +75,12 @@ def first_studies(limit=20):
             ON s.principal_investigator_id = sp_pi.study_person_id
         LEFT JOIN qiita.study_person sp_lab
             ON s.lab_person_id = sp_lab.study_person_id
+        WHERE EXISTS (
+            SELECT 1 FROM qiita.study_artifact sa
+            JOIN qiita.artifact a ON sa.artifact_id = a.artifact_id
+            JOIN qiita.visibility v ON a.visibility_id = v.visibility_id
+            WHERE sa.study_id = s.study_id AND v.visibility = 'public'
+        )
         ORDER BY s.study_id
         LIMIT %s
         """
@@ -112,6 +118,19 @@ def _qiita_fetch(sql, params=(), default=None):
         return rows if rows else (default if default is not None else [])
     except Exception:
         return default if default is not None else []
+
+
+def is_study_public(study_id: int) -> bool:
+    """Return True only if the study has at least one public artifact."""
+    rows = _qiita_fetch(
+        """SELECT 1 FROM qiita.study_artifact sa
+           JOIN qiita.artifact a ON sa.artifact_id = a.artifact_id
+           JOIN qiita.visibility v ON a.visibility_id = v.visibility_id
+           WHERE sa.study_id = %s AND v.visibility = 'public'
+           LIMIT 1""",
+        [int(study_id)],
+    )
+    return bool(rows)
 
 
 def _fetch_study_samples(study_id: int, limit: int = 200):
