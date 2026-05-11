@@ -406,35 +406,36 @@ function renderApp(s) {
             <div className="modal-id">Study ID {modalStudy.study_id}</div>
             <div className="modal-title">{modalStudy.study_title || 'Untitled study'}</div>
 
-            {(modalStudy.data_types || modalStudy.num_samples != null || modalStudy.num_preps != null) && (
-              <div className="modal-stats">
-                {(modalStudy.data_types || '').split(',').map(t => t.trim()).filter(Boolean).map(t => (
-                  <span key={t} className="dtype-chip">{t}</span>
-                ))}
-                {modalStudy.num_samples != null && <span className="modal-stat">{modalStudy.num_samples} samples</span>}
-                {modalStudy.num_preps   != null && <span className="modal-stat">{modalStudy.num_preps} preps</span>}
-              </div>
-            )}
-
-            {modalStudy.study_abstract && (
-              <div className="modal-section"><h4>Abstract</h4><p>{modalStudy.study_abstract}</p></div>
-            )}
-            {modalStudy.pi_name && (
-              <div className="modal-section">
-                <h4>Principal Investigator</h4>
-                <p>{modalStudy.pi_name}{modalStudy.pi_affiliation ? ` — ${modalStudy.pi_affiliation}` : ''}</p>
-              </div>
-            )}
-            {modalStudy.pi_email && (
-              <div className="modal-section"><h4>Contact</h4><p>{modalStudy.pi_email}</p></div>
-            )}
-
             {!modalDetailLoading && modalDetail?.isPrivate ? (
-              <div className="modal-section" style={{color:'#888', fontStyle:'italic'}}>
-                This is a private study and its data is not publicly available.
+              <div style={{display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'3rem 1rem', gap:'1rem', color:'#aaa'}}>
+                <span style={{fontSize:'4rem', lineHeight:1}}>✕</span>
+                <span style={{fontSize:'1rem', fontStyle:'italic', textAlign:'center'}}>This is a private study and its data is not publicly available.</span>
               </div>
             ) : (
               <>
+                {(modalStudy.data_types || modalStudy.num_samples != null || modalStudy.num_preps != null) && (
+                  <div className="modal-stats">
+                    {(modalStudy.data_types || '').split(',').map(t => t.trim()).filter(Boolean).map(t => (
+                      <span key={t} className="dtype-chip">{t}</span>
+                    ))}
+                    {modalStudy.num_samples != null && <span className="modal-stat">{modalStudy.num_samples} samples</span>}
+                    {modalStudy.num_preps   != null && <span className="modal-stat">{modalStudy.num_preps} preps</span>}
+                  </div>
+                )}
+
+                {modalStudy.study_abstract && (
+                  <div className="modal-section"><h4>Abstract</h4><p>{modalStudy.study_abstract}</p></div>
+                )}
+                {modalStudy.pi_name && (
+                  <div className="modal-section">
+                    <h4>Principal Investigator</h4>
+                    <p>{modalStudy.pi_name}{modalStudy.pi_affiliation ? ` — ${modalStudy.pi_affiliation}` : ''}</p>
+                  </div>
+                )}
+                {modalStudy.pi_email && (
+                  <div className="modal-section"><h4>Contact</h4><p>{modalStudy.pi_email}</p></div>
+                )}
+
                 <div className="modal-section">
                   <h4>Prep Templates</h4>
                   <PrepsTable detail={modalDetail} loading={modalDetailLoading} />
