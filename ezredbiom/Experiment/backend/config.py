@@ -9,7 +9,7 @@ API_KEY = os.getenv("API_KEY")
 client = OpenAI(
     api_key=API_KEY,
     base_url="https://ellm.nrp-nautilus.io/v1",
-    timeout=30.0,
+    timeout=300.0,
 )
 
 PROJECT_CONTEXT_MAX_CHARS       = int(os.getenv("PROJECT_CONTEXT_MAX_CHARS", "12000"))
