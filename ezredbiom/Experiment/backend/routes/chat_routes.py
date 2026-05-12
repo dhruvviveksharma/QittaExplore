@@ -122,11 +122,16 @@ def api_chat_message_stream(project_id, chat_id):
         try:
             if report_study_id is not None:
                 yield _sse("step_start", {"name": "load_samples", "label": f"Loading sample data for study {report_study_id}…"})
-                ui_payload  = _build_samples_report_payload(report_study_id)
-                num_samples = (ui_payload.get("header") or {}).get("num_samples") or len(ui_payload.get("samples") or [])
-                assistant_parts = [f"Loaded full sample metadata for study {report_study_id} ({num_samples} samples). See inline browser."]
-                yield _sse("step_done", {"name": "load_samples", "label": "Sample data loaded", "detail": f"{num_samples} samples"})
-                yield _sse("ui", ui_payload)
+                try:
+                    ui_payload  = _build_samples_report_payload(report_study_id)
+                    num_samples = (ui_payload.get("header") or {}).get("num_samples") or len(ui_payload.get("samples") or [])
+                    assistant_parts = [f"Loaded full sample metadata for study {report_study_id} ({num_samples} samples). See inline browser."]
+                    yield _sse("step_done", {"name": "load_samples", "label": "Sample data loaded", "detail": f"{num_samples} samples"})
+                    yield _sse("ui", ui_payload)
+                except ValueError:
+                    assistant_parts = [f"Study {report_study_id} is private or has no accessible sample data in Qiita."]
+                    yield _sse("step_done", {"name": "load_samples", "label": f"Study {report_study_id} is private — no accessible data"})
+                    ui_payload = None
             else:
                 num_proj_studies = len((proj or {}).get("studies") or [])
                 yield _sse("step_start", {"name": "build_context", "label": "Loading study context…"})
@@ -157,12 +162,12 @@ def api_chat_message_stream(project_id, chat_id):
                     yield _sse("token", {"token": token})
             assistant_content = "".join(assistant_parts).strip()
             append_chat_messages(project_id, user_id, chat_id, user_content, assistant_content, assistant_ui_payload=ui_payload)
-            if report_study_id is not None:
+            if report_study_id is not None and ui_payload is not None:
                 try:
                     pin_study_to_chat(chat_id, SCOPE_PROJECT, report_study_id)
                 except Exception:
                     logger.exception("failed to pin study %s to project chat %s", report_study_id, chat_id)
-            yield _sse("done", {"chat_id": chat_id, "persisted": True, "pinned_study_id": report_study_id})
+            yield _sse("done", {"chat_id": chat_id, "persisted": True, "pinned_study_id": report_study_id if ui_payload else None})
         except Exception as e:
             logger.exception("stream error in project chat %s", chat_id)
             yield _sse("error", {"error": str(e)})

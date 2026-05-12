@@ -340,6 +340,8 @@ def _build_samples_report_payload(study_id: int, sample_limit: int = REPORT_SAMP
     """Build the structured payload rendered as an inline samples-browser in the chat bubble."""
     study_id = int(study_id)
     header   = _fetch_study_header_cached(study_id) or {}
+    if (header.get("num_samples") or 0) == 0 and (header.get("num_preps") or 0) == 0:
+        raise ValueError(f"Study {study_id} is private or has no accessible data")
     samples  = _get_or_fetch_full_samples(study_id, limit=sample_limit) or []
     return {
         "kind": "samples_report",
