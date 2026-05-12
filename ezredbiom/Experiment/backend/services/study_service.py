@@ -12,7 +12,7 @@ def search_studies_with_sql(custom_sql_where="", params=None, limit=50):
     params : list
         Parameters for the SQL query
     limit : int
-        Max rows (clamped 1–150)
+        Max rows (clamped 1–200)
 
     Returns
     -------
@@ -25,7 +25,7 @@ def search_studies_with_sql(custom_sql_where="", params=None, limit=50):
         lim = int(limit)
     except (TypeError, ValueError):
         lim = 50
-    lim = max(1, min(150, lim))
+    lim = max(1, min(200, lim))
 
     with TRN:
         sql = f"""

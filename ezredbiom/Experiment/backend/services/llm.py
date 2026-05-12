@@ -15,7 +15,8 @@ _BREADTH_RE = re.compile(
     r'\b('
     r'many|all|several|overview|landscape|broad|extensive|multiple|various|'
     r'lots|wide|comprehensive|enumerate|examples?|catalog|survey|'
-    r'anything|everything|explore|discovery|range|diverse'
+    r'anything|everything|explore|discovery|range|diverse|related|'
+    r'outcomes?|findings'
     r')\b',
     re.I,
 )
@@ -37,15 +38,21 @@ def llm_query_to_sql(user_query: str) -> dict:
     words    = re.findall(r'\b[a-zA-Z0-9]+\b', user_query.lower())
     keywords = [w for w in words if w not in _STOP_WORDS and len(w) >= 3]
 
-    broad = bool(_BREADTH_RE.search(user_query)) or (len(keywords) >= 4)
+    # Broad: explicit breadth language, many terms, or "give me all …".
+    broad = (
+        bool(_BREADTH_RE.search(user_query))
+        or (len(keywords) >= 3)
+        or bool(re.search(r'\bgive\s+me\s+all\b', user_query, re.I))
+    )
+    # Always OR keyword clauses: AND on rare tokens (e.g. pediatric+cancer) matched
+    # almost nothing; OR matches "related to A, B, or C" discovery intent.
     if broad:
-        kw_use       = keywords[:6]
-        keyword_join = " OR "
-        search_limit = max(1, min(150, GLOBAL_SEARCH_SQL_LIMIT_BROAD))
+        kw_use       = keywords[:8]
+        search_limit = max(1, min(200, GLOBAL_SEARCH_SQL_LIMIT_BROAD))
     else:
-        kw_use       = keywords[:2]
-        keyword_join = " AND "
-        search_limit = max(1, min(150, GLOBAL_SEARCH_SQL_LIMIT_NARROW))
+        kw_use       = keywords[:6]
+        search_limit = max(1, min(200, GLOBAL_SEARCH_SQL_LIMIT_NARROW))
+    keyword_join = " OR "
 
     clauses: list = []
     params:  list = []
