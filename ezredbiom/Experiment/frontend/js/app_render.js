@@ -432,9 +432,11 @@ function renderApp(s) {
               title="Choose the LLM that answers your message. Switch if one is down."
             >
               <option value="qwen3">Qwen 3</option>
-              <option value="gemma3">Gemma 3</option>
+              <option value="qwen3-small">Qwen 3 Small</option>
+              <option value="gemma">Gemma 3</option>
               <option value="minimax-m2">MiniMax M2</option>
-              <option value="kimi-k2">Kimi K2</option>
+              <option value="kimi">Kimi K2</option>
+              <option value="gpt-oss">GPT OSS</option>
             </select>
           </div>
           {compErr && <div className="composer-error">{compErr}</div>}

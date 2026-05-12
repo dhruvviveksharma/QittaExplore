@@ -20,8 +20,12 @@ function useAppState() {
   const [input,   setInput]   = useState('');
   const [sending, setSending] = useState(false);
   const [compErr, setCompErr] = useState('');
+  const _VALID_MODELS = new Set(['qwen3', 'qwen3-small', 'gemma', 'minimax-m2', 'kimi', 'gpt-oss']);
   const [selectedModel, setSelectedModelState] = useState(() => {
-    try { return localStorage.getItem('llm:model') || 'qwen3'; } catch (_) { return 'qwen3'; }
+    try {
+      const saved = localStorage.getItem('llm:model');
+      return (saved && _VALID_MODELS.has(saved)) ? saved : 'qwen3';
+    } catch (_) { return 'qwen3'; }
   });
   const setSelectedModel = (value) => {
     setSelectedModelState(value);
