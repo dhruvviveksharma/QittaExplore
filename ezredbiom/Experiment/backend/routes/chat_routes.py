@@ -23,9 +23,9 @@ from helpers.llm_helpers import (
     llm_chat_stream,
 )
 from helpers.qiita_fetch import (
-    _auto_pin_project_studies,
     _build_pinned_reports_context,
     _build_samples_report_payload,
+    _detect_mentioned_study_ids,
 )
 
 logger = logging.getLogger(__name__)
@@ -47,7 +47,6 @@ def api_create_chat(project_id):
         return jsonify({'error': 'Project not found'}), 404
     first_message = (data.get('message') or data.get('first_message') or '').strip()
     chat          = create_chat(project_id, user_id, first_message or data.get('title'))
-    _auto_pin_project_studies(chat["chat_id"], proj)
     if first_message:
         study_ctx         = _build_project_study_context(proj, user_id=user_id)
         assistant_content = llm_chat([{"role": "user", "content": first_message}], study_context_text=study_ctx)
@@ -129,19 +128,30 @@ def api_chat_message_stream(project_id, chat_id):
                 yield _sse("step_done", {"name": "load_samples", "label": "Sample data loaded", "detail": f"{num_samples} samples"})
                 yield _sse("ui", ui_payload)
             else:
-                pinned_studies   = chat.get("pinned_studies") or []
                 num_proj_studies = len((proj or {}).get("studies") or [])
                 yield _sse("step_start", {"name": "build_context", "label": "Loading study context…"})
                 study_ctx = _build_project_study_context(proj, user_id=user_id)
                 yield _sse("step_done", {"name": "build_context", "label": "Study context ready", "detail": f"{num_proj_studies} studies"})
                 yield ': keepalive\n\n'
-                pinned_ctx = None
-                if pinned_studies:
-                    yield _sse("step_start", {"name": "pinned_reports", "label": "Loading pinned study data…"})
-                    pinned_ctx = _build_pinned_reports_context(pinned_studies)
-                    yield _sse("step_done", {"name": "pinned_reports", "label": "Pinned reports ready", "detail": f"{len(pinned_studies)} studies"})
+                # Merge dynamically detected study IDs with any explicitly pinned ones
+                detected_ids   = _detect_mentioned_study_ids(user_content, proj)
+                pinned_studies = chat.get("pinned_studies") or []
+                deep_ids       = list(dict.fromkeys(detected_ids + [s for s in pinned_studies if s not in detected_ids]))
+                deep_ctx = None
+                if deep_ids:
+                    if detected_ids:
+                        ids_label = f"study {detected_ids[0]}" if len(detected_ids) == 1 else f"{len(detected_ids)} studies"
+                        fetch_label = f"Fetching data for {ids_label}…"
+                        done_label  = "Study data ready"
+                    else:
+                        fetch_label = "Loading pinned study data…"
+                        done_label  = "Pinned reports ready"
+                    yield _sse("step_start", {"name": "deep_context", "label": fetch_label})
+                    deep_ctx = _build_pinned_reports_context(deep_ids)
+                    yield _sse("step_done", {"name": "deep_context", "label": done_label, "detail": f"{len(deep_ids)} studies"})
                     yield ': keepalive\n\n'
-                combined_ctx = "\n\n".join(x for x in (study_ctx, pinned_ctx) if x) or None
+                combined_ctx = "\n\n".join(x for x in (study_ctx, deep_ctx) if x) or None
+                yield _sse("step_start", {"name": "llm_generate", "label": "Generating response…"})
                 for token in llm_chat_stream(full_msgs, study_context_text=combined_ctx):
                     assistant_parts.append(token)
                     yield _sse("token", {"token": token})
@@ -179,7 +189,6 @@ def api_create_chat_stream(project_id):
     chat = create_chat(project_id, user_id, user_content)
     if not chat:
         return jsonify({'error': 'Failed to create chat'}), 500
-    _auto_pin_project_studies(chat["chat_id"], proj)
     num_proj_studies = len((proj or {}).get("studies") or [])
 
     def generate():
@@ -190,7 +199,17 @@ def api_create_chat_stream(project_id):
             study_ctx = _build_project_study_context(proj, user_id=user_id)
             yield _sse("step_done", {"name": "build_context", "label": "Study context ready", "detail": f"{num_proj_studies} studies"})
             yield ': keepalive\n\n'
-            for token in llm_chat_stream([{"role": "user", "content": user_content}], study_context_text=study_ctx):
+            detected_ids = _detect_mentioned_study_ids(user_content, proj)
+            deep_ctx = None
+            if detected_ids:
+                ids_label = f"study {detected_ids[0]}" if len(detected_ids) == 1 else f"{len(detected_ids)} studies"
+                yield _sse("step_start", {"name": "deep_context", "label": f"Fetching data for {ids_label}…"})
+                deep_ctx = _build_pinned_reports_context(detected_ids)
+                yield _sse("step_done", {"name": "deep_context", "label": "Study data ready", "detail": f"{len(detected_ids)} studies"})
+                yield ': keepalive\n\n'
+            combined_ctx = "\n\n".join(x for x in (study_ctx, deep_ctx) if x) or None
+            yield _sse("step_start", {"name": "llm_generate", "label": "Generating response…"})
+            for token in llm_chat_stream([{"role": "user", "content": user_content}], study_context_text=combined_ctx):
                 assistant_parts.append(token)
                 yield _sse("token", {"token": token, "chat_id": chat["chat_id"]})
             assistant_content = "".join(assistant_parts).strip()

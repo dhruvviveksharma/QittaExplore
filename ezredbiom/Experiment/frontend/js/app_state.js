@@ -218,7 +218,7 @@ function useAppState() {
     });
 
   const applyStreamDone = (chatId, title, reportStudyId) => {
-    patchLast(chatId, m => ({ ...m, isStreaming: false }));
+    patchLast(chatId, m => ({ ...m, isStreaming: false, pendingStep: null }));
     setChatCache(prev => {
       const cur = prev[chatId] || {};
       const pins = cur.pinnedStudies || [];

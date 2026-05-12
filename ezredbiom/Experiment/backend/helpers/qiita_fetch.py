@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -355,6 +356,27 @@ def _build_samples_report_payload(study_id: int, sample_limit: int = REPORT_SAMP
         },
         "samples": samples,
     }
+
+
+def _detect_mentioned_study_ids(user_content: str, proj) -> list:
+    """Return project study IDs explicitly mentioned in user_content.
+
+    Matches 'study 77', 'study ID 77', '#77'. Only returns IDs that exist
+    in the project to avoid false positives on unrelated numbers.
+    """
+    project_study_ids = {
+        int(s["study_id"])
+        for s in ((proj or {}).get("studies") or [])
+        if s.get("study_id") is not None
+    }
+    if not project_study_ids:
+        return []
+    found = set()
+    for m in re.finditer(r'\b(?:study\s+(?:id\s+)?|#)(\d+)\b', user_content, re.IGNORECASE):
+        sid = int(m.group(1))
+        if sid in project_study_ids:
+            found.add(sid)
+    return sorted(found)
 
 
 def _auto_pin_project_studies(chat_id: str, project: dict):

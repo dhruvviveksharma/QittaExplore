@@ -124,6 +124,7 @@ def api_global_chat_message_stream(chat_id):
                     yield _sse("step_done", {"name": "pinned_reports", "label": "Pinned reports ready", "detail": f"{len(pinned_studies)} studies"})
                     yield ': keepalive\n\n'
                 combined_ctx = "\n\n".join(x for x in (study_ctx, pinned_ctx) if x) or None
+                yield _sse("step_start", {"name": "llm_generate", "label": "Generating response…"})
                 for token in llm_chat_stream(
                     full_msgs,
                     study_context_text=combined_ctx,
