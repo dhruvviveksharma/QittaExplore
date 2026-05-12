@@ -111,25 +111,37 @@ def api_chat_message_stream(project_id, chat_id):
     if not chat:
         return jsonify({'error': 'Chat not found'}), 404
 
-    proj        = get_project_studies_only(project_id)
-    study_ctx   = _build_project_study_context(proj, user_id=user_id)
-    pinned_ctx  = _build_pinned_reports_context(chat.get("pinned_studies") or []) if report_study_id is None else None
-    combined_ctx = "\n\n".join(x for x in (study_ctx, pinned_ctx) if x) or None
-    messages    = chat.get('messages') or []
-    full_msgs   = [{"role": m.get("role"), "content": m.get("content")} for m in messages]
+    proj      = get_project_studies_only(project_id)
+    messages  = chat.get('messages') or []
+    full_msgs = [{"role": m.get("role"), "content": m.get("content")} for m in messages]
     full_msgs.append({"role": "user", "content": user_content})
 
     def generate():
+        yield ': keepalive\n\n'
         assistant_parts = []
         ui_payload      = None
         try:
             if report_study_id is not None:
-                yield _sse("token", {"token": f"Loading sample metadata for study {report_study_id}…"})
+                yield _sse("step_start", {"name": "load_samples", "label": f"Loading sample data for study {report_study_id}…"})
                 ui_payload  = _build_samples_report_payload(report_study_id)
                 num_samples = (ui_payload.get("header") or {}).get("num_samples") or len(ui_payload.get("samples") or [])
                 assistant_parts = [f"Loaded full sample metadata for study {report_study_id} ({num_samples} samples). See inline browser."]
+                yield _sse("step_done", {"name": "load_samples", "label": "Sample data loaded", "detail": f"{num_samples} samples"})
                 yield _sse("ui", ui_payload)
             else:
+                pinned_studies   = chat.get("pinned_studies") or []
+                num_proj_studies = len((proj or {}).get("studies") or [])
+                yield _sse("step_start", {"name": "build_context", "label": "Loading study context…"})
+                study_ctx = _build_project_study_context(proj, user_id=user_id)
+                yield _sse("step_done", {"name": "build_context", "label": "Study context ready", "detail": f"{num_proj_studies} studies"})
+                yield ': keepalive\n\n'
+                pinned_ctx = None
+                if pinned_studies:
+                    yield _sse("step_start", {"name": "pinned_reports", "label": "Loading pinned study data…"})
+                    pinned_ctx = _build_pinned_reports_context(pinned_studies)
+                    yield _sse("step_done", {"name": "pinned_reports", "label": "Pinned reports ready", "detail": f"{len(pinned_studies)} studies"})
+                    yield ': keepalive\n\n'
+                combined_ctx = "\n\n".join(x for x in (study_ctx, pinned_ctx) if x) or None
                 for token in llm_chat_stream(full_msgs, study_context_text=combined_ctx):
                     assistant_parts.append(token)
                     yield _sse("token", {"token": token})
@@ -142,6 +154,7 @@ def api_chat_message_stream(project_id, chat_id):
                     logger.exception("failed to pin study %s to project chat %s", report_study_id, chat_id)
             yield _sse("done", {"chat_id": chat_id, "persisted": True, "pinned_study_id": report_study_id})
         except Exception as e:
+            logger.exception("stream error in project chat %s", chat_id)
             yield _sse("error", {"error": str(e)})
 
     return Response(
@@ -167,11 +180,16 @@ def api_create_chat_stream(project_id):
     if not chat:
         return jsonify({'error': 'Failed to create chat'}), 500
     _auto_pin_project_studies(chat["chat_id"], proj)
-    study_ctx = _build_project_study_context(proj, user_id=user_id)
+    num_proj_studies = len((proj or {}).get("studies") or [])
 
     def generate():
         assistant_parts = []
         try:
+            yield ': keepalive\n\n'
+            yield _sse("step_start", {"name": "build_context", "label": "Loading study context…"})
+            study_ctx = _build_project_study_context(proj, user_id=user_id)
+            yield _sse("step_done", {"name": "build_context", "label": "Study context ready", "detail": f"{num_proj_studies} studies"})
+            yield ': keepalive\n\n'
             for token in llm_chat_stream([{"role": "user", "content": user_content}], study_context_text=study_ctx):
                 assistant_parts.append(token)
                 yield _sse("token", {"token": token, "chat_id": chat["chat_id"]})
@@ -179,6 +197,7 @@ def api_create_chat_stream(project_id):
             append_chat_messages(project_id, user_id, chat["chat_id"], user_content, assistant_content)
             yield _sse("done", {"chat_id": chat["chat_id"], "persisted": True})
         except Exception as e:
+            logger.exception("stream error in create_chat_stream for project %s", project_id)
             yield _sse("error", {"error": str(e), "chat_id": chat["chat_id"]})
 
     return Response(

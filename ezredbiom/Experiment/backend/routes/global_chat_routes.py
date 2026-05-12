@@ -81,21 +81,6 @@ def api_global_chat_message_stream(chat_id):
     if not chat:
         return jsonify({'error': 'Chat not found'}), 404
 
-    if report_study_id is None:
-        try:
-            sql_spec = llm_query_to_sql(user_content)
-            studies  = search_studies_with_sql(
-                sql_spec.get("where_clause", "1=1"),
-                sql_spec.get("params", []),
-            )
-        except Exception:
-            studies = []
-        study_ctx    = _build_global_search_context(studies, user_content)
-        pinned_ctx   = _build_pinned_reports_context(chat.get("pinned_studies") or [])
-        combined_ctx = "\n\n".join(x for x in (study_ctx, pinned_ctx) if x) or None
-    else:
-        combined_ctx = None
-
     messages  = chat.get('messages') or []
     full_msgs = [{"role": m.get("role"), "content": m.get("content")} for m in messages]
     full_msgs.append({"role": "user", "content": user_content})
@@ -104,13 +89,41 @@ def api_global_chat_message_stream(chat_id):
         assistant_parts = []
         ui_payload      = None
         try:
+            yield ': keepalive\n\n'
             if report_study_id is not None:
-                yield _sse("token", {"token": f"Loading sample metadata for study {report_study_id}…"})
+                yield _sse("step_start", {"name": "load_samples", "label": f"Loading sample data for study {report_study_id}…"})
                 ui_payload  = _build_samples_report_payload(report_study_id)
                 num_samples = (ui_payload.get("header") or {}).get("num_samples") or len(ui_payload.get("samples") or [])
                 assistant_parts = [f"Loaded full sample metadata for study {report_study_id} ({num_samples} samples). See inline browser."]
+                yield _sse("step_done", {"name": "load_samples", "label": "Sample data loaded", "detail": f"{num_samples} samples"})
                 yield _sse("ui", ui_payload)
             else:
+                yield _sse("step_start", {"name": "translate_query", "label": "Translating query…"})
+                try:
+                    sql_spec = llm_query_to_sql(user_content)
+                except Exception:
+                    sql_spec = {}
+                yield _sse("step_done", {"name": "translate_query", "label": "Query translated"})
+                yield ': keepalive\n\n'
+                yield _sse("step_start", {"name": "search_db", "label": "Searching Qiita database…"})
+                try:
+                    studies = search_studies_with_sql(
+                        sql_spec.get("where_clause", "1=1"),
+                        sql_spec.get("params", []),
+                    )
+                except Exception:
+                    studies = []
+                yield _sse("step_done", {"name": "search_db", "label": "Search complete", "detail": f"{len(studies)} studies found"})
+                yield ': keepalive\n\n'
+                study_ctx      = _build_global_search_context(studies, user_content)
+                pinned_studies = chat.get("pinned_studies") or []
+                pinned_ctx     = None
+                if pinned_studies:
+                    yield _sse("step_start", {"name": "pinned_reports", "label": "Loading pinned study data…"})
+                    pinned_ctx = _build_pinned_reports_context(pinned_studies)
+                    yield _sse("step_done", {"name": "pinned_reports", "label": "Pinned reports ready", "detail": f"{len(pinned_studies)} studies"})
+                    yield ': keepalive\n\n'
+                combined_ctx = "\n\n".join(x for x in (study_ctx, pinned_ctx) if x) or None
                 for token in llm_chat_stream(
                     full_msgs,
                     study_context_text=combined_ctx,
@@ -127,6 +140,7 @@ def api_global_chat_message_stream(chat_id):
                     logger.exception("failed to pin study %s to global chat %s", report_study_id, chat_id)
             yield _sse("done", {"chat_id": chat_id, "persisted": True, "pinned_study_id": report_study_id})
         except Exception as e:
+            logger.exception("stream error in global chat %s", chat_id)
             yield _sse("error", {"error": str(e)})
 
     return Response(

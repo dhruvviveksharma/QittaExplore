@@ -339,16 +339,35 @@ function renderApp(s) {
                       {m.role === 'assistant' && m.ui?.kind === 'samples_report' ? (
                         <SamplesReportBubble ui={m.ui} messageKey={`${view.chatId}-${i}`} />
                       ) : m.role === 'assistant' ? (
-                        m.isStreaming && !m.content ? (
-                          <div className="msg-bubble"><div className="typing-dots"><span/><span/><span/></div></div>
-                        ) : (
-                          <div
-                            className={`msg-bubble${m.isStreaming ? ' streaming' : ''}`}
-                            dangerouslySetInnerHTML={{
-                              __html: DOMPurify.sanitize(marked.parse(m.content || (!m.isStreaming ? '*No response*' : '')))
-                            }}
-                          />
-                        )
+                        <>
+                          {(m.steps?.length > 0 || m.pendingStep) && (
+                            <div className="msg-steps">
+                              {(m.steps || []).map((step, si) => (
+                                <div key={si} className="msg-step-done">
+                                  <span className="step-dot" />
+                                  <span className="step-label">{step.label}</span>
+                                  {step.detail && <span className="step-detail"> · {step.detail}</span>}
+                                </div>
+                              ))}
+                              {m.pendingStep && (
+                                <div className="msg-step-pending">
+                                  <div className="step-spinner" />
+                                  <span className="step-label">{m.pendingStep.label}</span>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          {m.isStreaming && !m.content && !m.steps?.length && !m.pendingStep ? (
+                            <div className="msg-bubble"><div className="typing-dots"><span/><span/><span/></div></div>
+                          ) : (!m.isStreaming || m.content) ? (
+                            <div
+                              className={`msg-bubble${m.isStreaming ? ' streaming' : ''}`}
+                              dangerouslySetInnerHTML={{
+                                __html: DOMPurify.sanitize(marked.parse(m.content || (!m.isStreaming ? '*No response*' : '')))
+                              }}
+                            />
+                          ) : null}
+                        </>
                       ) : (
                         <div className="msg-bubble">{m.content}</div>
                       )}

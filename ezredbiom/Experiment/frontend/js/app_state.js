@@ -211,7 +211,7 @@ function useAppState() {
           messages: [
             ...c.messages,
             { role: 'user',      content: userMsg },
-            { role: 'assistant', content: '', isStreaming: true },
+            { role: 'assistant', content: '', isStreaming: true, steps: [], pendingStep: null },
           ],
         },
       };
@@ -283,10 +283,19 @@ function useAppState() {
             ...(reportStudyId != null && { report_study_id: reportStudyId }),
           }), signal: ctrl.signal,
         });
-        if (!res.ok || !res.body) throw new Error('Stream failed');
+        if (!res.ok || !res.body) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || 'Stream failed');
+        }
         await parseSSE(res, {
-          onToken: ({ token }) => patchLast(chatId, m => ({ ...m, content: (m.content||'') + (token||'') })),
-          onUi:    (payload)  => patchLast(chatId, m => ({ ...m, ui: payload, content: '' })),
+          onToken:     ({ token }) => patchLast(chatId, m => ({ ...m, content: (m.content||'') + (token||'') })),
+          onUi:        (payload)  => patchLast(chatId, m => ({ ...m, ui: payload, content: '' })),
+          onStepStart: ({ name, label }) => patchLast(chatId, m => ({ ...m, pendingStep: { name, label } })),
+          onStepDone:  ({ name, label, detail }) => patchLast(chatId, m => ({
+            ...m,
+            pendingStep: null,
+            steps: [...(m.steps || []), { name, label, detail }],
+          })),
           onDone:  () => {
             const title = displayMsg.slice(0, 60);
             applyStreamDone(chatId, title, reportStudyId);
@@ -320,10 +329,19 @@ function useAppState() {
           }),
           signal: ctrl.signal,
         });
-        if (!res.ok || !res.body) throw new Error('Stream failed');
+        if (!res.ok || !res.body) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || 'Stream failed');
+        }
         await parseSSE(res, {
-          onToken: ({ token }) => patchLast(chatId, m => ({ ...m, content: (m.content||'') + (token||'') })),
-          onUi:    (payload)  => patchLast(chatId, m => ({ ...m, ui: payload, content: '' })),
+          onToken:     ({ token }) => patchLast(chatId, m => ({ ...m, content: (m.content||'') + (token||'') })),
+          onUi:        (payload)  => patchLast(chatId, m => ({ ...m, ui: payload, content: '' })),
+          onStepStart: ({ name, label }) => patchLast(chatId, m => ({ ...m, pendingStep: { name, label } })),
+          onStepDone:  ({ name, label, detail }) => patchLast(chatId, m => ({
+            ...m,
+            pendingStep: null,
+            steps: [...(m.steps || []), { name, label, detail }],
+          })),
           onDone:  () => {
             const title = displayMsg.slice(0, 60);
             applyStreamDone(chatId, title, reportStudyId);
