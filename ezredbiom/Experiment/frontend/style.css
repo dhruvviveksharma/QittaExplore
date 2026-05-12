@@ -510,6 +510,30 @@ input, textarea { font-family: var(--sans); }
 .composer-send:disabled { opacity: .35; cursor: not-allowed; }
 .composer-error { max-width: 720px; margin: 5px auto 0; font-size: 12px; color: var(--accent); text-align: center; }
 
+.composer-model {
+  max-width: 720px;
+  margin: 6px auto 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.composer-model-label { color: var(--text-3); }
+.composer-model-select {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 2px 6px;
+  cursor: pointer;
+  transition: border-color var(--t);
+}
+.composer-model-select:hover:not(:disabled) { border-color: var(--accent); }
+.composer-model-select:disabled { opacity: .5; cursor: not-allowed; }
+
 .composer-pins {
   max-width: 720px;
   margin: 0 auto 6px;

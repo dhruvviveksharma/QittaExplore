@@ -7,7 +7,33 @@ from config import (
     CHAT_SYSTEM_PROMPT,
     PROJECT_CONTEXT_MAX_CHARS,
     GLOBAL_CONTEXT_MAX_CHARS,
+    DEFAULT_MODEL,
+    ALLOWED_MODELS,
 )
+
+
+def _resolve_model(model):
+    if model and model in ALLOWED_MODELS:
+        return model
+    return DEFAULT_MODEL
+
+
+def friendly_llm_error(exc, model=None):
+    raw = str(exc) or exc.__class__.__name__
+    lowered = raw.lower()
+    connection_markers = (
+        "upstream connect error",
+        "connection refused",
+        "remote connection failure",
+        "delayed connect error",
+        "connection reset",
+        "service unavailable",
+        "502", "503", "504",
+    )
+    if any(m in lowered for m in connection_markers):
+        name = model or "the selected model"
+        return f"{name} is currently unavailable on NRP-Nautilus. Try selecting a different model from the dropdown below the chat box."
+    return raw
 from store import (
     get_project_context_summary,
     get_study_detail_cache,
@@ -125,7 +151,7 @@ def _study_seed_text(study: dict):
 def _summarize_text(prompt: str, fallback: str):
     try:
         r = client.chat.completions.create(
-            model="qwen3",
+            model=DEFAULT_MODEL,
             messages=[
                 {"role": "system", "content": "Summarize provided study metadata for retrieval context. Be factual and concise. Do not invent details."},
                 {"role": "user", "content": prompt},
@@ -312,17 +338,17 @@ def _build_global_search_context(studies, user_query: str):
     return "\n".join(lines)
 
 
-def llm_chat(messages, study_context_text: str, system_prompt: str = None):
+def llm_chat(messages, study_context_text: str, system_prompt: str = None, model: str = None):
     r = client.chat.completions.create(
-        model="qwen3",
+        model=_resolve_model(model),
         messages=_build_api_messages(messages, study_context_text, system_prompt),
     )
     return (r.choices[0].message.content or "").strip()
 
 
-def llm_chat_stream(messages, study_context_text: str, system_prompt: str = None):
+def llm_chat_stream(messages, study_context_text: str, system_prompt: str = None, model: str = None):
     stream  = client.chat.completions.create(
-        model="qwen3",
+        model=_resolve_model(model),
         messages=_build_api_messages(messages, study_context_text, system_prompt),
         stream=True,
     )

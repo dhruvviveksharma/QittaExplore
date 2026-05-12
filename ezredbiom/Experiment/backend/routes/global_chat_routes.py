@@ -21,6 +21,7 @@ from helpers.llm_helpers import (
     _sse,
     _build_global_search_context,
     llm_chat_stream,
+    friendly_llm_error,
 )
 from helpers.qiita_fetch import (
     _build_pinned_reports_context,
@@ -68,6 +69,7 @@ def api_global_chat_message_stream(chat_id):
     data             = request.get_json() or {}
     user_id          = (data.get('user_id') or 'default').strip() or 'default'
     user_content     = (data.get('message') or data.get('content') or '').strip()
+    model            = data.get('model')
     report_study_id  = data.get("report_study_id")
     selected_studies = data.get("selected_studies") or []
     if report_study_id is not None:
@@ -121,6 +123,7 @@ def api_global_chat_message_stream(chat_id):
                     full_msgs,
                     study_context_text=combined_ctx,
                     system_prompt=GLOBAL_CHAT_SYSTEM_PROMPT,
+                    model=model,
                 ):
                     assistant_parts.append(token)
                     yield _sse("token", {"token": token})
@@ -153,6 +156,7 @@ def api_global_chat_message_stream(chat_id):
                     full_msgs,
                     study_context_text=combined_ctx,
                     system_prompt=GLOBAL_CHAT_SYSTEM_PROMPT,
+                    model=model,
                 ):
                     assistant_parts.append(token)
                     yield _sse("token", {"token": token})
@@ -166,7 +170,7 @@ def api_global_chat_message_stream(chat_id):
             yield _sse("done", {"chat_id": chat_id, "persisted": True, "pinned_study_id": report_study_id if ui_payload else None})
         except Exception as e:
             logger.exception("stream error in global chat %s", chat_id)
-            yield _sse("error", {"error": str(e)})
+            yield _sse("error", {"error": friendly_llm_error(e, model)})
 
     return Response(
         stream_with_context(generate()),

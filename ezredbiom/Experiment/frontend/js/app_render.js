@@ -2,12 +2,12 @@ function renderApp(s) {
   const {
     setView, setOpenProjId, setProjInnerTab, setShowNewProj, setNewProjName,
     setQuery, setResults, setSearched, setSqlQuery, setShowSql,
-    setCtxStudies, setInput,
+    setCtxStudies, setInput, setSelectedModel,
     projects, projLoading, openProjId, openProject, view,
     chatCache, globalChats, projInnerTab,
     query, results, firstStudies, searching, searched, sqlQuery, showSql,
     ctxStudies, showNewProj, newProjName,
-    input, sending, compErr,
+    input, sending, compErr, selectedModel,
     modalStudy, modalDetail, modalDetailLoading,
     projDetailLoading, chatLoading,
     taRef, bottomRef,
@@ -420,6 +420,22 @@ function renderApp(s) {
               disabled={!isChat || sending}
             />
             <button className="composer-send" onClick={sendMessage} disabled={!canSend}>↑</button>
+          </div>
+          <div className="composer-model">
+            <label className="composer-model-label" htmlFor="composer-model-select">Model:</label>
+            <select
+              id="composer-model-select"
+              className="composer-model-select"
+              value={selectedModel}
+              onChange={e => setSelectedModel(e.target.value)}
+              disabled={sending}
+              title="Choose the LLM that answers your message. Switch if one is down."
+            >
+              <option value="qwen3">Qwen 3</option>
+              <option value="gemma3">Gemma 3</option>
+              <option value="minimax-m2">MiniMax M2</option>
+              <option value="kimi-k2">Kimi K2</option>
+            </select>
           </div>
           {compErr && <div className="composer-error">{compErr}</div>}
         </div>

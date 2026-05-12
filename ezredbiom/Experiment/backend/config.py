@@ -12,6 +12,9 @@ client = OpenAI(
     timeout=300.0,
 )
 
+DEFAULT_MODEL  = "qwen3"
+ALLOWED_MODELS = {"qwen3", "gemma3", "minimax-m2", "kimi-k2"}
+
 PROJECT_CONTEXT_MAX_CHARS       = int(os.getenv("PROJECT_CONTEXT_MAX_CHARS", "12000"))
 PROJECT_SUMMARY_GEN_LIMIT       = int(os.getenv("PROJECT_SUMMARY_GEN_LIMIT", "5"))
 GLOBAL_CONTEXT_MAX_CHARS        = int(os.getenv("GLOBAL_CONTEXT_MAX_CHARS", "24000"))

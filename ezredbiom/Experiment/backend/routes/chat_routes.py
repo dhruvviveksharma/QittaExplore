@@ -21,6 +21,7 @@ from helpers.llm_helpers import (
     _build_project_study_context,
     llm_chat,
     llm_chat_stream,
+    friendly_llm_error,
 )
 from helpers.qiita_fetch import (
     _build_pinned_reports_context,
@@ -46,10 +47,11 @@ def api_create_chat(project_id):
     if not proj:
         return jsonify({'error': 'Project not found'}), 404
     first_message = (data.get('message') or data.get('first_message') or '').strip()
+    model         = data.get('model')
     chat          = create_chat(project_id, user_id, first_message or data.get('title'))
     if first_message:
         study_ctx         = _build_project_study_context(proj, user_id=user_id)
-        assistant_content = llm_chat([{"role": "user", "content": first_message}], study_context_text=study_ctx)
+        assistant_content = llm_chat([{"role": "user", "content": first_message}], study_context_text=study_ctx, model=model)
         append_chat_messages(project_id, user_id, chat["chat_id"], first_message, assistant_content)
     chat = get_chat(project_id, user_id, chat["chat_id"])
     return jsonify(chat)
@@ -76,6 +78,7 @@ def api_chat_message(project_id, chat_id):
     data         = request.get_json() or {}
     user_id      = (data.get('user_id') or 'default').strip() or 'default'
     user_content = (data.get('message') or data.get('content') or '').strip()
+    model        = data.get('model')
     if not user_content:
         return jsonify({'error': 'message required'}), 400
     chat = get_chat(project_id, user_id, chat_id)
@@ -86,7 +89,7 @@ def api_chat_message(project_id, chat_id):
     messages  = chat.get('messages') or []
     full_msgs = [{"role": m.get("role"), "content": m.get("content")} for m in messages]
     full_msgs.append({"role": "user", "content": user_content})
-    assistant_content = llm_chat(full_msgs, study_context_text=study_ctx)
+    assistant_content = llm_chat(full_msgs, study_context_text=study_ctx, model=model)
     append_chat_messages(project_id, user_id, chat_id, user_content, assistant_content)
     updated = get_chat(project_id, user_id, chat_id)
     return jsonify(updated)
@@ -97,6 +100,7 @@ def api_chat_message_stream(project_id, chat_id):
     data            = request.get_json() or {}
     user_id         = (data.get('user_id') or 'default').strip() or 'default'
     user_content    = (data.get('message') or data.get('content') or '').strip()
+    model           = data.get('model')
     report_study_id = data.get("report_study_id")
     if report_study_id is not None:
         try:
@@ -157,7 +161,7 @@ def api_chat_message_stream(project_id, chat_id):
                     yield ': keepalive\n\n'
                 combined_ctx = "\n\n".join(x for x in (study_ctx, deep_ctx) if x) or None
                 yield _sse("step_start", {"name": "llm_generate", "label": "Generating response…"})
-                for token in llm_chat_stream(full_msgs, study_context_text=combined_ctx):
+                for token in llm_chat_stream(full_msgs, study_context_text=combined_ctx, model=model):
                     assistant_parts.append(token)
                     yield _sse("token", {"token": token})
             assistant_content = "".join(assistant_parts).strip()
@@ -170,7 +174,7 @@ def api_chat_message_stream(project_id, chat_id):
             yield _sse("done", {"chat_id": chat_id, "persisted": True, "pinned_study_id": report_study_id if ui_payload else None})
         except Exception as e:
             logger.exception("stream error in project chat %s", chat_id)
-            yield _sse("error", {"error": str(e)})
+            yield _sse("error", {"error": friendly_llm_error(e, model)})
 
     return Response(
         stream_with_context(generate()),
@@ -184,6 +188,7 @@ def api_create_chat_stream(project_id):
     data         = request.get_json() or {}
     user_id      = (data.get('user_id') or 'default').strip() or 'default'
     user_content = (data.get('message') or data.get('content') or '').strip()
+    model        = data.get('model')
     if not user_content:
         return jsonify({'error': 'message required'}), 400
 
@@ -214,7 +219,7 @@ def api_create_chat_stream(project_id):
                 yield ': keepalive\n\n'
             combined_ctx = "\n\n".join(x for x in (study_ctx, deep_ctx) if x) or None
             yield _sse("step_start", {"name": "llm_generate", "label": "Generating response…"})
-            for token in llm_chat_stream([{"role": "user", "content": user_content}], study_context_text=combined_ctx):
+            for token in llm_chat_stream([{"role": "user", "content": user_content}], study_context_text=combined_ctx, model=model):
                 assistant_parts.append(token)
                 yield _sse("token", {"token": token, "chat_id": chat["chat_id"]})
             assistant_content = "".join(assistant_parts).strip()
@@ -222,7 +227,7 @@ def api_create_chat_stream(project_id):
             yield _sse("done", {"chat_id": chat["chat_id"], "persisted": True})
         except Exception as e:
             logger.exception("stream error in create_chat_stream for project %s", project_id)
-            yield _sse("error", {"error": str(e), "chat_id": chat["chat_id"]})
+            yield _sse("error", {"error": friendly_llm_error(e, model), "chat_id": chat["chat_id"]})
 
     return Response(
         stream_with_context(generate()),

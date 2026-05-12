@@ -20,6 +20,13 @@ function useAppState() {
   const [input,   setInput]   = useState('');
   const [sending, setSending] = useState(false);
   const [compErr, setCompErr] = useState('');
+  const [selectedModel, setSelectedModelState] = useState(() => {
+    try { return localStorage.getItem('llm:model') || 'qwen3'; } catch (_) { return 'qwen3'; }
+  });
+  const setSelectedModel = (value) => {
+    setSelectedModelState(value);
+    try { localStorage.setItem('llm:model', value); } catch (_) {}
+  };
   const [modalStudy,         setModalStudy]         = useState(null);
   const [modalDetail,        setModalDetail]        = useState(null);
   const [modalDetailLoading, setModalDetailLoading] = useState(false);
@@ -280,6 +287,7 @@ function useAppState() {
           body: JSON.stringify({
             user_id: USER_ID,
             message: msg,
+            model: selectedModel,
             ...(reportStudyId != null && { report_study_id: reportStudyId }),
           }), signal: ctrl.signal,
         });
@@ -324,6 +332,7 @@ function useAppState() {
           body: JSON.stringify({
             user_id: USER_ID,
             message: msg,
+            model: selectedModel,
             selected_studies: ctxStudies,
             ...(reportStudyId != null && { report_study_id: reportStudyId }),
           }),
@@ -414,13 +423,13 @@ function useAppState() {
     // state setters needed in render
     setView, setOpenProjId, setProjInnerTab, setShowNewProj, setNewProjName,
     setQuery, setResults, setSearched, setSqlQuery, setShowSql,
-    setCtxStudies, setInput,
+    setCtxStudies, setInput, setSelectedModel,
     // state values
     projects, projLoading, openProjId, openProject, view,
     chatCache, globalChats, projInnerTab,
     query, results, firstStudies, searching, searched, sqlQuery, showSql,
     ctxStudies, showNewProj, newProjName,
-    input, sending, compErr,
+    input, sending, compErr, selectedModel,
     modalStudy, modalDetail, modalDetailLoading,
     projDetailLoading, chatLoading,
     // refs
