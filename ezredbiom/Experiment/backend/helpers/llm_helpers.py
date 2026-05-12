@@ -74,7 +74,7 @@ _STUDY_BLOCK_SKIP_KEYS = {
 }
 
 
-def _study_detail_block(study: dict):
+def _study_detail_block(study: dict, include_samples_context: bool = True):
     sid = study.get("study_id")
     title         = _truncate(study.get("study_title") or "Untitled study", 160)
     abstract      = _truncate(study.get("study_abstract") or "Not available", 900)
@@ -119,6 +119,10 @@ def _study_detail_block(study: dict):
         extra_lines.append(f"  {key}: {val}")
 
     samples_context = (study.get("samples_context") or "").strip()
+    if include_samples_context and samples_context:
+        samples_tail = f"\n{_truncate(samples_context, 3500)}"
+    else:
+        samples_tail = ""
 
     return (
         f"- ID {sid}: {title}\n"
@@ -129,8 +133,68 @@ def _study_detail_block(study: dict):
         f"  Lab Contact: {lab_person}"
         + (f"\n{chr(10).join(enriched_lines)}" if enriched_lines else "")
         + (f"\n{chr(10).join(extra_lines)}" if extra_lines else "")
-        + (f"\n{samples_context}" if samples_context else "")
+        + samples_tail
     )
+
+
+def _study_discovery_compact_block(study: dict) -> str:
+    """One study, minimal lines for global discovery (no sample metadata dump)."""
+    sid   = study.get("study_id")
+    title = _truncate(study.get("study_title") or "Untitled study", 140)
+    pi    = _truncate(study.get("pi_name") or "N/A", 80)
+    aff   = _truncate((study.get("pi_affiliation") or "").strip(), 80)
+    if aff:
+        pi_line = f"{pi} ({aff})" if pi != "N/A" else aff
+    else:
+        pi_line = pi
+    abstract = _truncate((study.get("study_abstract") or "").strip() or "Not available", 240)
+    dt       = _truncate((study.get("data_types") or "").strip(), 80)
+    ns       = study.get("num_samples")
+    np       = study.get("num_preps")
+    counts   = []
+    if ns is not None:
+        counts.append(f"{ns} samples")
+    if np is not None:
+        counts.append(f"{np} preps")
+    count_s = " · ".join(counts) if counts else "counts n/a"
+    dtype_s = f" | Types: {dt}" if dt else ""
+    return (
+        f"- ID {sid}: {title}\n"
+        f"  PI: {pi_line} | {count_s}{dtype_s}\n"
+        f"  Abstract: {abstract}"
+    )
+
+
+def _format_discovery_study_list(studies, header_line: str, max_chars: int):
+    """Fit as many compact study blocks as possible under max_chars."""
+    if not studies:
+        return f"{header_line}\n(none)\n"
+    chosen         = []
+    overflow_ids   = []
+    running        = len(header_line) + 2
+    for s in studies:
+        block = _study_discovery_compact_block(s)
+        gap   = 0 if not chosen else 2
+        if running + gap + len(block) > max_chars:
+            sid = s.get("study_id")
+            if sid is not None:
+                overflow_ids.append(sid)
+            continue
+        running += gap + len(block)
+        chosen.append(block)
+    out = header_line.strip() + "\n\n" + "\n\n".join(chosen) if chosen else header_line.strip() + "\n"
+    if overflow_ids:
+        tail = (
+            "\n(Additional study IDs omitted from full rows: "
+            f"{', '.join(str(i) for i in overflow_ids[:120])}"
+            + ("…" if len(overflow_ids) > 120 else "")
+            + ")"
+        )
+        if len(out) + len(tail) <= max_chars:
+            out += tail
+        else:
+            out = out[: max(0, max_chars - 4)] + "..."
+    return out + "\n"
 
 
 def _study_seed_text(study: dict):
@@ -214,7 +278,7 @@ def _build_project_study_context(project: dict, user_id: str = "default"):
         "You have access to the following saved Qiita studies in this project. "
         "When referencing specific studies, ONLY use these IDs and titles:\n"
     )
-    detailed_blocks = [_study_detail_block(s) for s in studies]
+    detailed_blocks = [_study_detail_block(s, include_samples_context=True) for s in studies]
     full_context    = header + "\n".join(detailed_blocks)
     if len(full_context) <= PROJECT_CONTEXT_MAX_CHARS:
         return full_context
@@ -324,18 +388,51 @@ def _build_api_messages(messages, study_context_text: str, system_prompt: str = 
 
 
 def _build_global_search_context(studies, user_query: str):
-    """Build LLM context from auto-searched studies for global chat."""
+    """Build LLM context from auto-searched studies for global chat (compact rows)."""
     if not studies:
         return f'A database search for "{user_query}" returned no matching studies in Qiita. Suggest rephrasing or broadening the query.'
-    lines   = [f'The following {len(studies)} studies were retrieved from Qiita based on the query "{user_query}":\n']
-    running = len(lines[0])
-    for s in studies:
-        block = _study_detail_block(s)
-        if running + len(block) > GLOBAL_CONTEXT_MAX_CHARS:
-            break
-        lines.append(block)
-        running += len(block)
-    return "\n".join(lines)
+    header = (
+        f'The following {len(studies)} studies were retrieved from Qiita based on the query "{user_query}":'
+    )
+    return _format_discovery_study_list(studies, header, GLOBAL_CONTEXT_MAX_CHARS)
+
+
+def merge_global_chat_context(selected_studies, db_studies, user_query: str) -> str:
+    """
+    Combine user-selected browse chips with database search hits for global chat.
+    Dedupes DB rows that are already in selected_studies by study_id.
+    """
+    selected = selected_studies or []
+    sel_ids  = {s.get("study_id") for s in selected if s.get("study_id") is not None}
+    db_only  = [s for s in (db_studies or []) if s.get("study_id") not in sel_ids]
+
+    intro = (
+        "Context layout: (1) USER-SELECTED BROWSE CONTEXT — studies the user attached as chips. "
+        "(2) DATABASE SEARCH RESULTS — studies returned by running their latest message against Qiita. "
+        "Use database results for breadth and discovery; use selected studies when the question is "
+        "specifically about those IDs or for comparison.\n"
+    )
+    sel_budget = min(14000, max(1500, 400 * max(1, len(selected))))
+    db_budget  = max(2000, GLOBAL_CONTEXT_MAX_CHARS - len(intro) - sel_budget - 80)
+
+    sel_header = f"USER-SELECTED BROWSE CONTEXT ({len(selected)} studies):"
+    sel_text   = _format_discovery_study_list(selected, sel_header, sel_budget)
+
+    if not db_studies:
+        db_text = (
+            "DATABASE SEARCH RESULTS:\n"
+            "(No matching public studies for this query.)\n"
+        )
+    elif not db_only:
+        db_text = (
+            "DATABASE SEARCH RESULTS:\n"
+            f"({len(db_studies)} studies matched the query; all are already listed in user-selected context above.)\n"
+        )
+    else:
+        db_header = f'DATABASE SEARCH RESULTS ({len(db_only)} studies) for "{user_query}":'
+        db_text   = _format_discovery_study_list(db_only, db_header, db_budget)
+
+    return intro.strip() + "\n\n" + sel_text.strip() + "\n\n" + db_text.strip()
 
 
 def llm_chat(messages, study_context_text: str, system_prompt: str = None, model: str = None):

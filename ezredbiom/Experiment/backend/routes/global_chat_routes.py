@@ -20,6 +20,7 @@ from store import (
 from helpers.llm_helpers import (
     _sse,
     _build_global_search_context,
+    merge_global_chat_context,
     llm_chat_stream,
     friendly_llm_error,
 )
@@ -105,28 +106,6 @@ def api_global_chat_message_stream(chat_id):
                     assistant_parts = [f"Study {report_study_id} is private or has no accessible sample data in Qiita."]
                     yield _sse("step_done", {"name": "load_samples", "label": f"Study {report_study_id} is private — no accessible data"})
                     ui_payload = None
-            elif selected_studies:
-                yield _sse("step_start", {"name": "build_context", "label": "Building context…"})
-                study_ctx = _build_global_search_context(selected_studies, user_content)
-                yield _sse("step_done", {"name": "build_context", "label": "Context ready", "detail": f"{len(selected_studies)} studies"})
-                yield ': keepalive\n\n'
-                pinned_studies = chat.get("pinned_studies") or []
-                pinned_ctx     = None
-                if pinned_studies:
-                    yield _sse("step_start", {"name": "pinned_reports", "label": "Loading pinned study data…"})
-                    pinned_ctx = _build_pinned_reports_context(pinned_studies)
-                    yield _sse("step_done", {"name": "pinned_reports", "label": "Pinned reports ready", "detail": f"{len(pinned_studies)} studies"})
-                    yield ': keepalive\n\n'
-                combined_ctx = "\n\n".join(x for x in (study_ctx, pinned_ctx) if x) or None
-                yield _sse("step_start", {"name": "llm_generate", "label": "Generating response…"})
-                for token in llm_chat_stream(
-                    full_msgs,
-                    study_context_text=combined_ctx,
-                    system_prompt=GLOBAL_CHAT_SYSTEM_PROMPT,
-                    model=model,
-                ):
-                    assistant_parts.append(token)
-                    yield _sse("token", {"token": token})
             else:
                 yield _sse("step_start", {"name": "translate_query", "label": "Translating query…"})
                 sql_spec = llm_query_to_sql(user_content)
@@ -137,12 +116,24 @@ def api_global_chat_message_stream(chat_id):
                     studies = search_studies_with_sql(
                         sql_spec.get("where_clause", "1=1"),
                         sql_spec.get("params", []),
+                        limit=sql_spec.get("search_limit", 50),
                     )
                 except Exception:
                     studies = []
-                yield _sse("step_done", {"name": "search_db", "label": "Search complete", "detail": f"{len(studies)} studies found"})
+                n_sel = len(selected_studies) if selected_studies else 0
+                detail = f"{len(studies)} studies found"
+                if n_sel:
+                    detail += f" · merged with {n_sel} context {'studies' if n_sel != 1 else 'study'}"
+                yield _sse("step_done", {"name": "search_db", "label": "Search complete", "detail": detail})
                 yield ': keepalive\n\n'
-                study_ctx      = _build_global_search_context(studies, user_content)
+                yield _sse("step_start", {"name": "build_context", "label": "Building context…"})
+                if selected_studies:
+                    study_ctx = merge_global_chat_context(selected_studies, studies, user_content)
+                    yield _sse("step_done", {"name": "build_context", "label": "Context ready", "detail": f"{n_sel} selected + {len(studies)} from search"})
+                else:
+                    study_ctx = _build_global_search_context(studies, user_content)
+                    yield _sse("step_done", {"name": "build_context", "label": "Context ready", "detail": f"{len(studies)} studies"})
+                yield ': keepalive\n\n'
                 pinned_studies = chat.get("pinned_studies") or []
                 pinned_ctx     = None
                 if pinned_studies:

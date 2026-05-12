@@ -209,7 +209,8 @@ function renderApp(s) {
 
               {!openProjId && ctxStudies.length > 0 && (
                 <div className="ctx-bar">
-                  <span className="ctx-label">Chat context</span>
+                  <span className="ctx-label">Global chat context</span>
+                  <span className="ctx-hint">Searches Qiita on every message; chips add these studies as extra context. Remove all chips for search-only.</span>
                   {ctxStudies.map(s => (
                     <button key={s.study_id} className="ctx-chip"
                       onClick={() => setCtxStudies(prev => prev.filter(x => x.study_id !== s.study_id))}>
@@ -302,6 +303,7 @@ function renderApp(s) {
               {view.type === 'global-chat' && ctxStudies.length > 0 && (
                 <div className="sources-bar">
                   <span className="sources-label">Context</span>
+                  <span className="sources-hint">Merged with DB search on send</span>
                   {ctxStudies.map(s => (
                     <button key={s.study_id} className="src-chip removable"
                       onClick={() => setCtxStudies(prev => prev.filter(x => x.study_id !== s.study_id))}>
@@ -324,7 +326,7 @@ function renderApp(s) {
                     <p className="chat-empty-sub">
                       {view.type === 'project-chat'
                         ? `Ask anything about your ${openProject?.studies?.length || 0} saved studies.`
-                        : 'Add studies as context from Browse, then ask questions here.'}
+                        : 'Each message runs a database search. Add optional context chips from Browse to highlight specific studies alongside search results.'}
                     </p>
                     <div className="chat-empty-chips">
                       {['What are the key themes?','Who are the PIs?','Summarize the abstracts','What sample types were used?','/report 104 - Full study report']

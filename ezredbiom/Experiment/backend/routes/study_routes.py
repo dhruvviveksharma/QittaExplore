@@ -105,7 +105,10 @@ def search():
         sql_query   = llm_query_to_sql(user_query)
         where_clause = sql_query.get('where_clause') or '1=1'
         params       = sql_query.get('params') if isinstance(sql_query.get('params'), list) else []
-        results      = search_studies_with_sql(custom_sql_where=where_clause, params=params)
+        lim          = sql_query.get("search_limit", 50) if isinstance(sql_query, dict) else 50
+        results      = search_studies_with_sql(
+            custom_sql_where=where_clause, params=params, limit=lim
+        )
 
         return jsonify({
             'results':   results if isinstance(results, list) else [],

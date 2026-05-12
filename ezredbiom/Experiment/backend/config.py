@@ -18,6 +18,8 @@ ALLOWED_MODELS = {"gemma", "gemma-small", "olmo"}
 PROJECT_CONTEXT_MAX_CHARS       = int(os.getenv("PROJECT_CONTEXT_MAX_CHARS", "12000"))
 PROJECT_SUMMARY_GEN_LIMIT       = int(os.getenv("PROJECT_SUMMARY_GEN_LIMIT", "5"))
 GLOBAL_CONTEXT_MAX_CHARS        = int(os.getenv("GLOBAL_CONTEXT_MAX_CHARS", "24000"))
+GLOBAL_SEARCH_SQL_LIMIT_BROAD   = int(os.getenv("GLOBAL_SEARCH_SQL_LIMIT_BROAD", "120"))
+GLOBAL_SEARCH_SQL_LIMIT_NARROW  = int(os.getenv("GLOBAL_SEARCH_SQL_LIMIT_NARROW", "50"))
 REPORT_SAMPLE_LIMIT             = 200
 PINNED_REPORT_CONTEXT_MAX_CHARS = int(os.getenv("PINNED_REPORT_CONTEXT_MAX_CHARS", "40000"))
 PINNED_REPORT_MIN_PER_STUDY     = int(os.getenv("PINNED_REPORT_MIN_PER_STUDY", "2000"))
@@ -59,6 +61,7 @@ Behavioral rules:
 - You may suggest follow-up searches or filtering criteria to narrow or broaden results.
 - If the user asks a conceptual question, answer it but also offer to help find relevant studies.
 - When a "PINNED STUDY REPORTS" block is present, you may reference per-sample fields from it verbatim. For cross-study comparisons, only compare studies that appear in pinned reports or in the retrieved results.
+- When both USER-SELECTED BROWSE CONTEXT and DATABASE SEARCH RESULTS appear, use the database results for breadth and discovery; use the selected studies when the user asks about those specific studies or for direct comparison.
 
 When answering:
 - Prefer organized, scannable responses — use tables or bullet lists for multiple studies.
