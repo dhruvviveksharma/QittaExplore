@@ -20,7 +20,7 @@ function useAppState() {
   const [input,   setInput]   = useState('');
   const [sending, setSending] = useState(false);
   const [compErr, setCompErr] = useState('');
-  const _VALID_MODELS = new Set(['qwen3', 'qwen3-small', 'gemma', 'minimax-m2', 'kimi', 'gpt-oss']);
+  const _VALID_MODELS = new Set(['gemma', 'gemma-small', 'olmo']);
   const [selectedModel, setSelectedModelState] = useState(() => {
     try {
       const saved = localStorage.getItem('llm:model');
