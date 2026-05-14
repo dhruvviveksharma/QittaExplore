@@ -38,6 +38,11 @@ nosetests.xml
 config.py
 !ezredbiom/Experiment/backend/config.py
 
+# Editor / tooling
+.vscode/
+.cursor/
+.claude/
+
 # OSX files
 .DS_Store
 
