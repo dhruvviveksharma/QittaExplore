@@ -16,7 +16,17 @@ function renderApp(s) {
     unpinStudy, sendMessage, openStudyModal, closeModal, enrichAllStudies, doSearch,
     projStudyIds, ctxStudyIds, displayStudies, isChat, canSend, topTitle,
     activeMsgs,
+    showAutocomplete, setShowAutocomplete, autocompleteCommands, setAutocompleteCommands,
   } = s;
+
+  // Slash commands definition
+  const SLASH_COMMANDS = [
+    { command: '/report', description: 'Generate full study report with sample metadata', syntax: '/report <study_id>' },
+  ];
+
+  // Slash autocomplete state
+  const [autocompletePos, setAutocompletePos] = React.useState({ top: 0, left: 0 });
+  const showSlashAutocomplete = showAutocomplete && autocompleteCommands.length > 0;
 
   return (
     <div className="app">
@@ -340,6 +350,8 @@ function renderApp(s) {
                     <div key={i} className={`msg-row ${m.role}${m.ui?.kind === 'samples_report' ? ' article' : ''}`}>
                       {m.role === 'assistant' && m.ui?.kind === 'samples_report' ? (
                         <SamplesReportBubble ui={m.ui} messageKey={`${view.chatId}-${i}`} />
+                      ) : m.role === 'assistant' && m.ui?.kind === 'study_abstracts_table' ? (
+                        <StudyAbstractsTable ui={m.ui} messageKey={`${view.chatId}-${i}`} />
                       ) : m.role === 'assistant' ? (
                         <>
                           {(m.steps?.length > 0 || m.pendingStep) && (
@@ -417,11 +429,52 @@ function renderApp(s) {
               rows={1}
               placeholder={isChat ? 'Message…' : 'Open a chat to start messaging'}
               value={input}
-              onChange={e => setInput(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && isChat) { e.preventDefault(); sendMessage(); } }}
+              onChange={e => {
+                setInput(e.target.value);
+                // Close autocomplete when typing after "/"
+                if (showAutocomplete && !e.target.value.startsWith('/')) {
+                  setShowAutocomplete(false);
+                }
+              }}
+              onKeyDown={e => {
+                if (e.key === '/') {
+                  // Show slash command autocomplete
+                  const rect = taRef.current?.getBoundingClientRect();
+                  if (rect) {
+                    setAutocompletePos({ top: rect.bottom + 4, left: rect.left });
+                  }
+                  setAutocompleteCommands(SLASH_COMMANDS);
+                  setShowAutocomplete(true);
+                } else if (e.key === 'Escape') {
+                  setShowAutocomplete(false);
+                } else if (e.key === 'Enter' && !e.shiftKey && showSlashAutocomplete) {
+                  // Select first command when Enter is pressed with autocomplete open
+                  e.preventDefault();
+                  setInput(input + autocompleteCommands[0].command + ' ');
+                  setShowAutocomplete(false);
+                } else if (e.key === 'Enter' && !e.shiftKey && isChat) {
+                  e.preventDefault();
+                  sendMessage();
+                }
+              }}
               disabled={!isChat || sending}
             />
             <button className="composer-send" onClick={sendMessage} disabled={!canSend}>↑</button>
+            {showSlashAutocomplete && (
+              <div className="slash-autocomplete" style={{ position: 'absolute', top: autocompletePos.top, left: autocompletePos.left, minWidth: '300px' }}>
+                {autocompleteCommands.map(cmd => (
+                  <div key={cmd.command} className="slash-command-item"
+                    onClick={() => {
+                      setInput(input + cmd.command + ' ');
+                      setShowAutocomplete(false);
+                      taRef.current?.focus();
+                    }}>
+                    <span className="slash-command">{cmd.command}</span>
+                    <span className="slash-description">{cmd.description}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
           <div className="composer-model">
             <label className="composer-model-label" htmlFor="composer-model-select">Model:</label>

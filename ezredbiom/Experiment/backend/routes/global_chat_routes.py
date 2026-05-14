@@ -27,6 +27,7 @@ from helpers.llm_helpers import (
 from helpers.qiita_fetch import (
     _build_pinned_reports_context,
     _build_samples_report_payload,
+    _build_study_abstracts_table_payload,
 )
 
 logger = logging.getLogger(__name__)
@@ -143,6 +144,8 @@ def api_global_chat_message_stream(chat_id):
                     yield ': keepalive\n\n'
                 combined_ctx = "\n\n".join(x for x in (study_ctx, pinned_ctx) if x) or None
                 yield _sse("step_start", {"name": "llm_generate", "label": "Generating response…"})
+                # Collect study IDs for abstracts table (search results + pinned)
+                global_study_ids = [s.get("study_id") for s in studies if s.get("study_id")]
                 for token in llm_chat_stream(
                     full_msgs,
                     study_context_text=combined_ctx,
@@ -151,6 +154,15 @@ def api_global_chat_message_stream(chat_id):
                 ):
                     assistant_parts.append(token)
                     yield _sse("token", {"token": token})
+                # Append study abstracts table if studies were found
+                context_study_ids = list(set(global_study_ids + pinned_studies))
+                if context_study_ids:
+                    try:
+                        abstracts_payload = _build_study_abstracts_table_payload(context_study_ids)
+                        if abstracts_payload:
+                            yield _sse("ui", abstracts_payload)
+                    except Exception:
+                        logger.exception("failed to build abstracts table for global chat")
             assistant_content = "".join(assistant_parts).strip()
             append_global_chat_messages(user_id, chat_id, user_content, assistant_content, assistant_ui_payload=ui_payload)
             if report_study_id is not None and ui_payload is not None:
