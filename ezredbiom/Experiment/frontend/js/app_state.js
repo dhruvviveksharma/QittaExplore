@@ -20,9 +20,22 @@ function useAppState() {
   const [input,   setInput]   = useState('');
   const [sending, setSending] = useState(false);
   const [compErr, setCompErr] = useState('');
+  const _VALID_MODELS = new Set(['gemma', 'gemma-small', 'olmo']);
+  const [selectedModel, setSelectedModelState] = useState(() => {
+    try {
+      const saved = localStorage.getItem('llm:model');
+      return (saved && _VALID_MODELS.has(saved)) ? saved : 'qwen3';
+    } catch (_) { return 'qwen3'; }
+  });
+  const setSelectedModel = (value) => {
+    setSelectedModelState(value);
+    try { localStorage.setItem('llm:model', value); } catch (_) {}
+  };
   const [modalStudy,         setModalStudy]         = useState(null);
   const [modalDetail,        setModalDetail]        = useState(null);
   const [modalDetailLoading, setModalDetailLoading] = useState(false);
+  const [projDetailLoading,  setProjDetailLoading]  = useState(false);
+  const [chatLoading,        setChatLoading]        = useState(false);
 
   const abortRef      = useRef(null);
   const taRef         = useRef(null);
@@ -62,9 +75,14 @@ function useAppState() {
   };
 
   const fetchProjectDetail = async (pid) => {
-    const res = await apiFetch(`/projects/${pid}?user_id=${USER_ID}`);
-    if (res.ok) setOpenProject(await res.json());
-    apiPost(`/projects/${pid}/preload`, { user_id: USER_ID }).catch(() => {});
+    setProjDetailLoading(true);
+    try {
+      const res = await apiFetch(`/projects/${pid}?user_id=${USER_ID}`);
+      if (res.ok) setOpenProject(await res.json());
+      apiPost(`/projects/${pid}/preload`, { user_id: USER_ID }).catch(() => {});
+    } finally {
+      setProjDetailLoading(false);
+    }
   };
 
   const loadGlobalChats = async () => {
@@ -131,15 +149,23 @@ function useAppState() {
 
   // ─── chat navigation ──────────────────────────────────────────────────────────
   const openProjChat = async (projId, chatId) => {
-    await hydrateChatCache('project-chat', projId, chatId);
     setView({ type: 'project-chat', projId, chatId });
     setCompErr('');
+    if (!chatCache[chatId]) {
+      setChatLoading(true);
+      try { await hydrateChatCache('project-chat', projId, chatId); }
+      finally { setChatLoading(false); }
+    }
   };
 
   const openGlobChat = async (chatId) => {
-    await hydrateChatCache('global-chat', null, chatId);
     setView({ type: 'global-chat', chatId });
     setCompErr('');
+    if (!chatCache[chatId]) {
+      setChatLoading(true);
+      try { await hydrateChatCache('global-chat', null, chatId); }
+      finally { setChatLoading(false); }
+    }
   };
 
   const newProjChat = async (projId) => {
@@ -196,14 +222,14 @@ function useAppState() {
           messages: [
             ...c.messages,
             { role: 'user',      content: userMsg },
-            { role: 'assistant', content: '', isStreaming: true },
+            { role: 'assistant', content: '', isStreaming: true, steps: [], pendingStep: null },
           ],
         },
       };
     });
 
   const applyStreamDone = (chatId, title, reportStudyId) => {
-    patchLast(chatId, m => ({ ...m, isStreaming: false }));
+    patchLast(chatId, m => ({ ...m, isStreaming: false, pendingStep: null }));
     setChatCache(prev => {
       const cur = prev[chatId] || {};
       const pins = cur.pinnedStudies || [];
@@ -265,13 +291,23 @@ function useAppState() {
           body: JSON.stringify({
             user_id: USER_ID,
             message: msg,
+            model: selectedModel,
             ...(reportStudyId != null && { report_study_id: reportStudyId }),
           }), signal: ctrl.signal,
         });
-        if (!res.ok || !res.body) throw new Error('Stream failed');
+        if (!res.ok || !res.body) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || 'Stream failed');
+        }
         await parseSSE(res, {
-          onToken: ({ token }) => patchLast(chatId, m => ({ ...m, content: (m.content||'') + (token||'') })),
-          onUi:    (payload)  => patchLast(chatId, m => ({ ...m, ui: payload, content: '' })),
+          onToken:     ({ token }) => patchLast(chatId, m => ({ ...m, content: (m.content||'') + (token||'') })),
+          onUi:        (payload)  => patchLast(chatId, m => ({ ...m, ui: payload, content: '' })),
+          onStepStart: ({ name, label }) => patchLast(chatId, m => ({ ...m, pendingStep: { name, label } })),
+          onStepDone:  ({ name, label, detail }) => patchLast(chatId, m => ({
+            ...m,
+            pendingStep: null,
+            steps: [...(m.steps || []), { name, label, detail }],
+          })),
           onDone:  () => {
             const title = displayMsg.slice(0, 60);
             applyStreamDone(chatId, title, reportStudyId);
@@ -300,15 +336,25 @@ function useAppState() {
           body: JSON.stringify({
             user_id: USER_ID,
             message: msg,
+            model: selectedModel,
             selected_studies: ctxStudies,
             ...(reportStudyId != null && { report_study_id: reportStudyId }),
           }),
           signal: ctrl.signal,
         });
-        if (!res.ok || !res.body) throw new Error('Stream failed');
+        if (!res.ok || !res.body) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || 'Stream failed');
+        }
         await parseSSE(res, {
-          onToken: ({ token }) => patchLast(chatId, m => ({ ...m, content: (m.content||'') + (token||'') })),
-          onUi:    (payload)  => patchLast(chatId, m => ({ ...m, ui: payload, content: '' })),
+          onToken:     ({ token }) => patchLast(chatId, m => ({ ...m, content: (m.content||'') + (token||'') })),
+          onUi:        (payload)  => patchLast(chatId, m => ({ ...m, ui: payload, content: '' })),
+          onStepStart: ({ name, label }) => patchLast(chatId, m => ({ ...m, pendingStep: { name, label } })),
+          onStepDone:  ({ name, label, detail }) => patchLast(chatId, m => ({
+            ...m,
+            pendingStep: null,
+            steps: [...(m.steps || []), { name, label, detail }],
+          })),
           onDone:  () => {
             const title = displayMsg.slice(0, 60);
             applyStreamDone(chatId, title, reportStudyId);
@@ -381,14 +427,15 @@ function useAppState() {
     // state setters needed in render
     setView, setOpenProjId, setProjInnerTab, setShowNewProj, setNewProjName,
     setQuery, setResults, setSearched, setSqlQuery, setShowSql,
-    setCtxStudies, setInput,
+    setCtxStudies, setInput, setSelectedModel,
     // state values
     projects, projLoading, openProjId, openProject, view,
     chatCache, globalChats, projInnerTab,
     query, results, firstStudies, searching, searched, sqlQuery, showSql,
     ctxStudies, showNewProj, newProjName,
-    input, sending, compErr,
+    input, sending, compErr, selectedModel,
     modalStudy, modalDetail, modalDetailLoading,
+    projDetailLoading, chatLoading,
     // refs
     taRef, bottomRef,
     // handlers

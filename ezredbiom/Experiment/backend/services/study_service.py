@@ -1,17 +1,19 @@
 # backend/services/study_service.py
 from qiita_db.sql_connection import TRN
 
-def search_studies_with_sql(custom_sql_where="", params=None):
+def search_studies_with_sql(custom_sql_where="", params=None, limit=50):
     """
     Search studies using custom SQL WHERE clause
-    
+
     Parameters
     ----------
     custom_sql_where : str
         Custom WHERE clause (without the WHERE keyword)
     params : list
         Parameters for the SQL query
-    
+    limit : int
+        Max rows (clamped 1–200)
+
     Returns
     -------
     list
@@ -19,7 +21,12 @@ def search_studies_with_sql(custom_sql_where="", params=None):
     """
     if params is None:
         params = []
-    
+    try:
+        lim = int(limit)
+    except (TypeError, ValueError):
+        lim = 50
+    lim = max(1, min(200, lim))
+
     with TRN:
         sql = f"""
         SELECT DISTINCT s.study_id, s.study_title, s.study_abstract,
@@ -49,7 +56,7 @@ def search_studies_with_sql(custom_sql_where="", params=None):
         WHERE v.visibility = 'public'
           AND ({custom_sql_where if custom_sql_where else '1=1'})
         ORDER BY s.study_id
-        LIMIT 50
+        LIMIT {lim}
         """
 
         TRN.add(sql, params)

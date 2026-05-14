@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -339,6 +340,8 @@ def _build_samples_report_payload(study_id: int, sample_limit: int = REPORT_SAMP
     """Build the structured payload rendered as an inline samples-browser in the chat bubble."""
     study_id = int(study_id)
     header   = _fetch_study_header_cached(study_id) or {}
+    if (header.get("num_samples") or 0) == 0 and (header.get("num_preps") or 0) == 0:
+        raise ValueError(f"Study {study_id} is private or has no accessible data")
     samples  = _get_or_fetch_full_samples(study_id, limit=sample_limit) or []
     return {
         "kind": "samples_report",
@@ -355,6 +358,27 @@ def _build_samples_report_payload(study_id: int, sample_limit: int = REPORT_SAMP
         },
         "samples": samples,
     }
+
+
+def _detect_mentioned_study_ids(user_content: str, proj) -> list:
+    """Return project study IDs explicitly mentioned in user_content.
+
+    Matches 'study 77', 'study ID 77', '#77'. Only returns IDs that exist
+    in the project to avoid false positives on unrelated numbers.
+    """
+    project_study_ids = {
+        int(s["study_id"])
+        for s in ((proj or {}).get("studies") or [])
+        if s.get("study_id") is not None
+    }
+    if not project_study_ids:
+        return []
+    found = set()
+    for m in re.finditer(r'\b(?:study\s+(?:id\s+)?|#)(\d+)\b', user_content, re.IGNORECASE):
+        sid = int(m.group(1))
+        if sid in project_study_ids:
+            found.add(sid)
+    return sorted(found)
 
 
 def _auto_pin_project_studies(chat_id: str, project: dict):
@@ -461,6 +485,7 @@ def _fetch_study_detail_from_qiita(study_id: int):
         JOIN qiita.data_directory dd ON f.data_directory_id = dd.data_directory_id
         WHERE spt.study_id = %s
         ORDER BY pt.prep_template_id, a.artifact_id
+        LIMIT 500
         """,
         [study_id],
     )

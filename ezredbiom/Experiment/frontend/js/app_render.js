@@ -2,13 +2,14 @@ function renderApp(s) {
   const {
     setView, setOpenProjId, setProjInnerTab, setShowNewProj, setNewProjName,
     setQuery, setResults, setSearched, setSqlQuery, setShowSql,
-    setCtxStudies, setInput,
+    setCtxStudies, setInput, setSelectedModel,
     projects, projLoading, openProjId, openProject, view,
     chatCache, globalChats, projInnerTab,
     query, results, firstStudies, searching, searched, sqlQuery, showSql,
     ctxStudies, showNewProj, newProjName,
-    input, sending, compErr,
+    input, sending, compErr, selectedModel,
     modalStudy, modalDetail, modalDetailLoading,
+    projDetailLoading, chatLoading,
     taRef, bottomRef,
     createProject, deleteProject, addStudyToProject, removeStudy,
     openProjChat, openGlobChat, newProjChat, deleteProjChat, newGlobChat, deleteGlobChat,
@@ -52,6 +53,11 @@ function renderApp(s) {
 
               {openProjId === p.project_id && (
                 <div className="folder-expanded">
+                  {projDetailLoading && !openProject && (
+                    <div className="folder-loading">
+                      <div className="typing-dots"><span/><span/><span/></div>
+                    </div>
+                  )}
                   <button className="folder-new-chat-btn" onClick={() => newProjChat(p.project_id)}>
                     <span className="fnc-plus">+</span>
                     <span className="fnc-text">New chat in {p.name}</span>
@@ -203,7 +209,8 @@ function renderApp(s) {
 
               {!openProjId && ctxStudies.length > 0 && (
                 <div className="ctx-bar">
-                  <span className="ctx-label">Chat context</span>
+                  <span className="ctx-label">Global chat context</span>
+                  <span className="ctx-hint">Searches Qiita on every message; chips add these studies as extra context. Remove all chips for search-only.</span>
                   {ctxStudies.map(s => (
                     <button key={s.study_id} className="ctx-chip"
                       onClick={() => setCtxStudies(prev => prev.filter(x => x.study_id !== s.study_id))}>
@@ -296,6 +303,7 @@ function renderApp(s) {
               {view.type === 'global-chat' && ctxStudies.length > 0 && (
                 <div className="sources-bar">
                   <span className="sources-label">Context</span>
+                  <span className="sources-hint">Merged with DB search on send</span>
                   {ctxStudies.map(s => (
                     <button key={s.study_id} className="src-chip removable"
                       onClick={() => setCtxStudies(prev => prev.filter(x => x.study_id !== s.study_id))}>
@@ -306,7 +314,9 @@ function renderApp(s) {
               )}
 
               <div className={`chat-messages${activeMsgs.some(m => m.ui?.kind === 'samples_report') ? ' chat-messages-wide' : ''}`}>
-                {activeMsgs.length === 0 ? (
+                {activeMsgs.length === 0 && chatLoading ? (
+                  <div className="state-loading"><div className="spinner" /></div>
+                ) : activeMsgs.length === 0 ? (
                   <div className="chat-empty">
                     <div className="chat-empty-title">
                       {view.type === 'project-chat'
@@ -316,7 +326,7 @@ function renderApp(s) {
                     <p className="chat-empty-sub">
                       {view.type === 'project-chat'
                         ? `Ask anything about your ${openProject?.studies?.length || 0} saved studies.`
-                        : 'Add studies as context from Browse, then ask questions here.'}
+                        : 'Each message runs a database search. Add optional context chips from Browse to highlight specific studies alongside search results.'}
                     </p>
                     <div className="chat-empty-chips">
                       {['What are the key themes?','Who are the PIs?','Summarize the abstracts','What sample types were used?','/report 104 - Full study report']
@@ -331,16 +341,35 @@ function renderApp(s) {
                       {m.role === 'assistant' && m.ui?.kind === 'samples_report' ? (
                         <SamplesReportBubble ui={m.ui} messageKey={`${view.chatId}-${i}`} />
                       ) : m.role === 'assistant' ? (
-                        m.isStreaming && !m.content ? (
-                          <div className="msg-bubble"><div className="typing-dots"><span/><span/><span/></div></div>
-                        ) : (
-                          <div
-                            className={`msg-bubble${m.isStreaming ? ' streaming' : ''}`}
-                            dangerouslySetInnerHTML={{
-                              __html: DOMPurify.sanitize(marked.parse(m.content || (!m.isStreaming ? '*No response*' : '')))
-                            }}
-                          />
-                        )
+                        <>
+                          {(m.steps?.length > 0 || m.pendingStep) && (
+                            <div className="msg-steps">
+                              {(m.steps || []).map((step, si) => (
+                                <div key={si} className="msg-step-done">
+                                  <span className="step-dot" />
+                                  <span className="step-label">{step.label}</span>
+                                  {step.detail && <span className="step-detail"> · {step.detail}</span>}
+                                </div>
+                              ))}
+                              {m.pendingStep && (
+                                <div className="msg-step-pending">
+                                  <div className="step-spinner" />
+                                  <span className="step-label">{m.pendingStep.label}</span>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          {m.isStreaming && !m.content && !m.steps?.length && !m.pendingStep ? (
+                            <div className="msg-bubble"><div className="typing-dots"><span/><span/><span/></div></div>
+                          ) : (!m.isStreaming || m.content) ? (
+                            <div
+                              className={`msg-bubble${m.isStreaming ? ' streaming' : ''}`}
+                              dangerouslySetInnerHTML={{
+                                __html: DOMPurify.sanitize(marked.parse(m.content || (!m.isStreaming ? '*No response*' : '')))
+                              }}
+                            />
+                          ) : null}
+                        </>
                       ) : (
                         <div className="msg-bubble">{m.content}</div>
                       )}
@@ -393,6 +422,21 @@ function renderApp(s) {
               disabled={!isChat || sending}
             />
             <button className="composer-send" onClick={sendMessage} disabled={!canSend}>↑</button>
+          </div>
+          <div className="composer-model">
+            <label className="composer-model-label" htmlFor="composer-model-select">Model:</label>
+            <select
+              id="composer-model-select"
+              className="composer-model-select"
+              value={selectedModel}
+              onChange={e => setSelectedModel(e.target.value)}
+              disabled={sending}
+              title="Choose the LLM that answers your message. Switch if one is down."
+            >
+              <option value="gemma">Gemma 3</option>
+              <option value="gemma-small">Gemma 3 Small</option>
+              <option value="olmo">OLMo</option>
+            </select>
           </div>
           {compErr && <div className="composer-error">{compErr}</div>}
         </div>
