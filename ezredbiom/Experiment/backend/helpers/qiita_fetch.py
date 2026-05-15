@@ -360,34 +360,6 @@ def _build_samples_report_payload(study_id: int, sample_limit: int = REPORT_SAMP
     }
 
 
-def _build_study_abstracts_table_payload(study_ids: list):
-    """Build compact table payload for study abstracts - shows ID, title, abstract, PI, data_types, num_samples."""
-    if not study_ids:
-        return None
-
-    studies_data = []
-    for sid in study_ids:
-        header = _fetch_study_header_cached(sid)
-        if header:
-            studies_data.append({
-                "study_id": sid,
-                "study_title": header.get("study_title", "Untitled"),
-                "study_abstract": header.get("study_abstract", "Not available"),
-                "pi_name": header.get("pi_name", "Not available"),
-                "data_types": header.get("data_types", "N/A"),
-                "num_samples": header.get("num_samples", "N/A"),
-            })
-
-    if not studies_data:
-        return None
-
-    return {
-        "kind": "study_abstracts_table",
-        "studies": studies_data,
-        "total_count": len(studies_data),
-    }
-
-
 def _detect_mentioned_study_ids(user_content: str, proj) -> list:
     """Return project study IDs explicitly mentioned in user_content.
 

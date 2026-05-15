@@ -36,8 +36,6 @@ function useAppState() {
   const [modalDetailLoading, setModalDetailLoading] = useState(false);
   const [projDetailLoading,  setProjDetailLoading]  = useState(false);
   const [chatLoading,        setChatLoading]        = useState(false);
-  const [showAutocomplete,        setShowAutocomplete]        = useState(false);
-  const [autocompleteCommands,    setAutocompleteCommands]    = useState([]);
 
   const abortRef      = useRef(null);
   const taRef         = useRef(null);
@@ -438,8 +436,6 @@ function useAppState() {
     input, sending, compErr, selectedModel,
     modalStudy, modalDetail, modalDetailLoading,
     projDetailLoading, chatLoading,
-    showAutocomplete, setShowAutocomplete,
-    autocompleteCommands, setAutocompleteCommands,
     // refs
     taRef, bottomRef,
     // handlers

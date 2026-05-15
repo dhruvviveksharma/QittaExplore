@@ -26,7 +26,6 @@ from helpers.llm_helpers import (
 from helpers.qiita_fetch import (
     _build_pinned_reports_context,
     _build_samples_report_payload,
-    _build_study_abstracts_table_payload,
     _detect_mentioned_study_ids,
 )
 
@@ -165,15 +164,6 @@ def api_chat_message_stream(project_id, chat_id):
                 for token in llm_chat_stream(full_msgs, study_context_text=combined_ctx, model=model):
                     assistant_parts.append(token)
                     yield _sse("token", {"token": token})
-                # Append study abstracts table if studies were in context
-                context_study_ids = list(set(deep_ids))
-                if context_study_ids:
-                    try:
-                        abstracts_payload = _build_study_abstracts_table_payload(context_study_ids)
-                        if abstracts_payload:
-                            yield _sse("ui", abstracts_payload)
-                    except Exception:
-                        logger.exception("failed to build abstracts table for project chat")
             assistant_content = "".join(assistant_parts).strip()
             append_chat_messages(project_id, user_id, chat_id, user_content, assistant_content, assistant_ui_payload=ui_payload)
             if report_study_id is not None and ui_payload is not None:
