@@ -13,7 +13,22 @@ client = OpenAI(
 )
 
 DEFAULT_MODEL  = "gemma"
-ALLOWED_MODELS = {"gemma", "gemma-small", "olmo"}
+ALLOWED_MODELS = {
+    "qwen3", "qwen3-small", "gpt-oss",
+    "gemma", "gemma-small",
+    "kimi", "glm-5", "minimax-m2",
+}
+
+MODEL_METADATA = {
+    "qwen3":       {"tier": "main",       "size": "397B",  "context": 1_010_000, "modalities": "image, video"},
+    "qwen3-small": {"tier": "main",       "size": "27B",   "context": 1_010_000, "modalities": "image, video"},
+    "gpt-oss":     {"tier": "main",       "size": "120B",  "context": 131_072,   "modalities": "—"},
+    "gemma":       {"tier": "main",       "size": "31B",   "context": 262_144,   "modalities": "image, video"},
+    "gemma-small": {"tier": "evaluating", "size": "~8B",   "context": 131_072,   "modalities": "image, video, audio"},
+    "kimi":        {"tier": "evaluating", "size": "1T",    "context": 262_144,   "modalities": "image, video"},
+    "glm-5":       {"tier": "evaluating", "size": "744B",  "context": 202_752,   "modalities": "—"},
+    "minimax-m2":  {"tier": "evaluating", "size": "230B",  "context": 204_800,   "modalities": "—"},
+}
 
 PROJECT_CONTEXT_MAX_CHARS       = int(os.getenv("PROJECT_CONTEXT_MAX_CHARS", "12000"))
 PROJECT_SUMMARY_GEN_LIMIT       = int(os.getenv("PROJECT_SUMMARY_GEN_LIMIT", "5"))

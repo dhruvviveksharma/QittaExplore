@@ -170,31 +170,16 @@ def _format_discovery_study_list(studies, header_line: str, max_chars: int):
     """Fit as many compact study blocks as possible under max_chars."""
     if not studies:
         return f"{header_line}\n(none)\n"
-    chosen         = []
-    overflow_ids   = []
-    running        = len(header_line) + 2
+    chosen  = []
+    running = len(header_line) + 2
     for s in studies:
         block = _study_discovery_compact_block(s)
         gap   = 0 if not chosen else 2
         if running + gap + len(block) > max_chars:
-            sid = s.get("study_id")
-            if sid is not None:
-                overflow_ids.append(sid)
             continue
         running += gap + len(block)
         chosen.append(block)
     out = header_line.strip() + "\n\n" + "\n\n".join(chosen) if chosen else header_line.strip() + "\n"
-    if overflow_ids:
-        tail = (
-            "\n(Additional study IDs omitted from full rows: "
-            f"{', '.join(str(i) for i in overflow_ids[:120])}"
-            + ("…" if len(overflow_ids) > 120 else "")
-            + ")"
-        )
-        if len(out) + len(tail) <= max_chars:
-            out += tail
-        else:
-            out = out[: max(0, max_chars - 4)] + "..."
     return out + "\n"
 
 
@@ -483,8 +468,7 @@ def llm_chat_stream(messages, study_context_text: str, system_prompt: str = None
     for chunk in stream:
         if not chunk.choices:
             continue
-        delta = chunk.choices[0].delta
-        token = getattr(delta, "content", None) or getattr(delta, "reasoning_content", None)
+        token = chunk.choices[0].delta.content
         if token:
             yield token
             yielded = True

@@ -329,7 +329,7 @@ function renderApp(s) {
                         : 'Each message runs a database search. Add optional context chips from Browse to highlight specific studies alongside search results.'}
                     </p>
                     <div className="chat-empty-chips">
-                      {['What are the key themes?','Who are the PIs?','Summarize the abstracts','What sample types were used?','/report 104 - Full study report']
+                      {['What are the key themes?','Who are the PIs?','Summarize the abstracts','What sample types were used?','/report 104 - Full study report','/systems — Check model status']
                         .map(q => (
                           <button key={q} className="chat-starter" onClick={() => { setInput(q); s.taRef.current?.focus(); }}>{q}</button>
                         ))}
@@ -340,6 +340,8 @@ function renderApp(s) {
                     <div key={i} className={`msg-row ${m.role}${m.ui?.kind === 'samples_report' ? ' article' : ''}`}>
                       {m.role === 'assistant' && m.ui?.kind === 'samples_report' ? (
                         <SamplesReportBubble ui={m.ui} messageKey={`${view.chatId}-${i}`} />
+                      ) : m.role === 'assistant' && m.ui?.kind === 'systems_status' ? (
+                        <SystemsStatusBubble ui={m.ui} />
                       ) : m.role === 'assistant' ? (
                         <>
                           {(m.steps?.length > 0 || m.pendingStep) && (
@@ -447,9 +449,14 @@ function renderApp(s) {
               disabled={sending}
               title="Choose the LLM that answers your message. Switch if one is down."
             >
-              <option value="gemma">Gemma 3</option>
-              <option value="gemma-small">Gemma 3 Small</option>
-              <option value="olmo">OLMo</option>
+              <option value="qwen3">Qwen 3 (397B)</option>
+              <option value="qwen3-small">Qwen 3 Small (27B)</option>
+              <option value="gpt-oss">GPT-OSS (120B)</option>
+              <option value="gemma">Gemma (31B)</option>
+              <option value="gemma-small">Gemma Small (~8B)</option>
+              <option value="kimi">Kimi (1T)</option>
+              <option value="glm-5">GLM-5 (744B)</option>
+              <option value="minimax-m2">Minimax M2 (230B)</option>
             </select>
           </div>
           {compErr && <div className="composer-error">{compErr}</div>}

@@ -1,11 +1,13 @@
 import json
+import time
 import traceback
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from flask import jsonify, request
 from qiita_db.sql_connection import TRN
 
 from run import app
+from config import client, ALLOWED_MODELS, MODEL_METADATA
 from services.llm import llm_query_to_sql
 from services.study_service import search_studies_with_sql
 from store import get_study_detail_cache, upsert_study_detail_cache
@@ -123,6 +125,35 @@ def search():
 @app.route('/api/health', methods=['GET'])
 def health():
     return jsonify({'status': 'ok'})
+
+
+def _probe_model(model_name):
+    start = time.time()
+    try:
+        client.chat.completions.create(
+            model=model_name,
+            messages=[{"role": "user", "content": "Hi"}],
+            max_tokens=1,
+            timeout=15,
+        )
+        return model_name, "ok", int((time.time() - start) * 1000)
+    except Exception:
+        return model_name, "down", int((time.time() - start) * 1000)
+
+
+@app.route('/api/systems', methods=['GET'])
+def api_systems():
+    results = {}
+    with ThreadPoolExecutor(max_workers=len(ALLOWED_MODELS)) as pool:
+        futures = {pool.submit(_probe_model, m): m for m in ALLOWED_MODELS}
+        for f in as_completed(futures):
+            name, status, ms = f.result()
+            results[name] = {"status": status, "latency_ms": ms, **MODEL_METADATA.get(name, {})}
+    ordered = sorted(
+        results.items(),
+        key=lambda x: (0 if x[1].get("tier") == "main" else 1, x[0]),
+    )
+    return jsonify([{"name": k, **v} for k, v in ordered])
 
 
 @app.route('/api/studies/first', methods=['GET'])

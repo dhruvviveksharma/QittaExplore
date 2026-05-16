@@ -16,7 +16,17 @@ def search_studies_from_plan(plan: dict):
         params.extend([f"%{kw}%", f"%{kw}%"])
 
     where = f" {match_mode} ".join(clauses)
-    return search_studies_with_sql(where, params, 50)
+    studies = search_studies_with_sql(where, params, 50)
+
+    kw_lower = [k.lower() for k in keywords]
+
+    def _relevance(s):
+        title    = (s.get("study_title")    or "").lower()
+        abstract = (s.get("study_abstract") or "").lower()
+        score = sum((2 if kw in title else 0) + (1 if kw in abstract else 0) for kw in kw_lower)
+        return -score
+
+    return sorted(studies, key=_relevance)
 
 
 def search_studies_with_sql(custom_sql_where="", params=None, limit=50):

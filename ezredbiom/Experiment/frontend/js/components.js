@@ -301,6 +301,45 @@ function ArtifactsTable({ detail, loading, onMount }) {
   );
 }
 
+// ─── SystemsStatusBubble ─────────────────────────────────────────────────────
+function SystemsStatusBubble({ ui }) {
+  if (!ui?.models?.length) return null;
+  return (
+    <div className="systems-status">
+      <div className="systems-status-title">Model Status</div>
+      <table className="systems-table">
+        <thead>
+          <tr>
+            <th>Model</th>
+            <th>Size</th>
+            <th>Tier</th>
+            <th>Context</th>
+            <th>Modalities</th>
+            <th>Status</th>
+            <th>Latency</th>
+          </tr>
+        </thead>
+        <tbody>
+          {ui.models.map(m => (
+            <tr key={m.name} className={`systems-row systems-row-${m.status}`}>
+              <td><code className="systems-model-name">{m.name}</code></td>
+              <td className="systems-cell-dim">{m.size}</td>
+              <td><span className={`tier-badge tier-${m.tier}`}>{m.tier}</span></td>
+              <td className="systems-cell-dim">{m.context != null ? m.context.toLocaleString() : '—'}</td>
+              <td className="systems-cell-dim">{m.modalities}</td>
+              <td>
+                <span className={`status-indicator status-${m.status}`} />
+                {m.status === 'ok' ? 'Online' : 'Down'}
+              </td>
+              <td className="systems-cell-dim">{m.latency_ms != null ? `${m.latency_ms}ms` : '—'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // ─── SamplesReportBubble ──────────────────────────────────────────────────────
 function SamplesReportBubble({ ui, messageKey }) {
   if (!ui) return null;

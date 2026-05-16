@@ -20,7 +20,7 @@ function useAppState() {
   const [input,   setInput]   = useState('');
   const [sending, setSending] = useState(false);
   const [compErr, setCompErr] = useState('');
-  const _VALID_MODELS = new Set(['gemma', 'gemma-small', 'olmo']);
+  const _VALID_MODELS = new Set(['qwen3','qwen3-small','gpt-oss','gemma','gemma-small','kimi','glm-5','minimax-m2']);
   const [selectedModel, setSelectedModelState] = useState(() => {
     try {
       const saved = localStorage.getItem('llm:model');
@@ -257,6 +257,50 @@ function useAppState() {
   const sendMessage = async () => {
     const msg = input.trim();
     if (!msg || sending) return;
+
+    if (/^\/systems\s*$/i.test(msg)) {
+      setSending(true); setCompErr(''); setInput('');
+      try {
+        let chatId;
+        if (view.type === 'project-chat') {
+          const { projId } = view;
+          chatId = view.chatId;
+          if (!chatId) {
+            const res = await apiPost(`/projects/${projId}/chats`, { user_id: USER_ID });
+            if (!res.ok) throw new Error('Failed to create chat');
+            const chat = await res.json();
+            chatId = chat.chat_id;
+            setChatCache(prev => ({ ...prev, [chatId]: { messages: [], title: '/systems', pinnedStudies: [], totalStudiesInProject: chat.total_studies_in_project } }));
+            setView(v => ({ ...v, chatId }));
+          }
+        } else if (view.type === 'global-chat') {
+          chatId = view.chatId;
+          if (!chatId) {
+            const res = await apiPost('/global-chats', { user_id: USER_ID });
+            if (!res.ok) throw new Error('Failed to create chat');
+            const chat = await res.json();
+            chatId = chat.chat_id;
+            setChatCache(prev => ({ ...prev, [chatId]: { messages: [], title: '/systems' } }));
+            setGlobalChats(prev => [chat, ...prev]);
+            setView(v => ({ ...v, chatId }));
+          }
+        } else {
+          return;
+        }
+        optimisticAppend(chatId, '/systems — Model status');
+        patchLast(chatId, m => ({ ...m, pendingStep: { name: 'probe', label: 'Probing all models…' } }));
+        const res = await fetch(`${API}/systems`);
+        if (!res.ok) throw new Error('Systems check failed');
+        const models = await res.json();
+        patchLast(chatId, m => ({ ...m, ui: { kind: 'systems_status', models }, pendingStep: null, isStreaming: false }));
+      } catch (e) {
+        if (e.name !== 'AbortError') setCompErr(e.message || 'Failed to check systems');
+      } finally {
+        setSending(false);
+      }
+      return;
+    }
+
     const reportMatch  = /^\/report\s+(\d+)\s*$/i.exec(msg);
     const reportStudyId = reportMatch ? parseInt(reportMatch[1], 10) : null;
     const displayMsg   = reportStudyId != null ? `/report ${reportStudyId} - Full study report` : msg;
