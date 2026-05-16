@@ -1,6 +1,7 @@
 """LLM context builders, SSE formatter, and streaming wrappers."""
 
 import json
+import re
 
 from config import (
     client,
@@ -433,6 +434,35 @@ def merge_global_chat_context(selected_studies, db_studies, user_query: str) -> 
         db_text   = _format_discovery_study_list(db_only, db_header, db_budget)
 
     return intro.strip() + "\n\n" + sel_text.strip() + "\n\n" + db_text.strip()
+
+
+_QUERY_PLAN_SYSTEM = (
+    "You are a database query planner for a microbiome study repository.\n"
+    "Given the conversation history, output ONLY a JSON object (no markdown, no prose) with:\n"
+    '  "keywords": list of 1-6 search terms to match against study title and abstract'
+    " (accumulate context from ALL turns — carry forward filters from prior messages)\n"
+    '  "match_mode": "AND" if all terms must match, "OR" if any term suffices\n'
+    '  "description": short human-readable label for the search (e.g. "wild mouse shotgun studies")\n\n'
+    "Output valid JSON only. No explanation, no markdown fences."
+)
+
+
+def llm_plan_query(messages: list) -> dict:
+    """Call LLM with full conversation history to produce a structured search plan."""
+    try:
+        r = client.chat.completions.create(
+            model=DEFAULT_MODEL,
+            messages=[{"role": "system", "content": _QUERY_PLAN_SYSTEM}] + _normalize_messages(messages),
+        )
+        raw = (r.choices[0].message.content or "").strip()
+        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.DOTALL).strip()
+        plan = json.loads(raw)
+        plan.setdefault("keywords", [])
+        plan.setdefault("match_mode", "AND")
+        plan.setdefault("description", "studies")
+        return plan
+    except Exception:
+        return {"keywords": [], "match_mode": "AND", "description": "studies"}
 
 
 def llm_chat(messages, study_context_text: str, system_prompt: str = None, model: str = None):

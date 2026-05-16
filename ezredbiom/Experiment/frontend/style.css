@@ -437,6 +437,27 @@ input, textarea { font-family: var(--sans); }
   animation: spin .7s linear infinite;
 }
 
+/* ── Query plan chip ─────────────────────────────────────────── */
+.msg-query-plan {
+  display: inline-flex; align-items: center; flex-wrap: wrap; gap: 5px;
+  margin-bottom: 7px; padding: 4px 8px;
+  background: var(--surface-2, #f3f4f6); border-radius: 6px;
+  font-size: 11px; font-family: monospace; color: var(--text-3);
+  max-width: 100%;
+}
+.qp-icon { font-style: normal; color: var(--accent); flex-shrink: 0; }
+.qp-desc { color: var(--text-2); font-weight: 500; }
+.qp-keywords { display: inline-flex; flex-wrap: wrap; gap: 3px; }
+.qp-kw-chip {
+  padding: 1px 6px; border-radius: 10px;
+  background: var(--accent-muted, rgba(99,102,241,.12));
+  color: var(--accent); font-size: 10px; white-space: nowrap;
+}
+.qp-mode {
+  margin-left: 2px; color: var(--text-3);
+  font-size: 10px; text-transform: lowercase; opacity: .7;
+}
+
 /* ── Markdown rendering inside msg-bubble ────────────────────── */
 .msg-bubble {
   max-width: 82%;

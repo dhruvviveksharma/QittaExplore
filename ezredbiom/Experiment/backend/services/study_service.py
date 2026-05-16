@@ -1,6 +1,24 @@
 # backend/services/study_service.py
 from qiita_db.sql_connection import TRN
 
+
+def search_studies_from_plan(plan: dict):
+    """Execute a search plan dict produced by llm_plan_query against Qiita."""
+    keywords = [k.strip() for k in (plan.get("keywords") or []) if len(k.strip()) >= 3][:6]
+    match_mode = "AND" if (plan.get("match_mode") or "AND").upper() == "AND" else "OR"
+
+    if not keywords:
+        return search_studies_with_sql("1=1", [], 50)
+
+    clauses, params = [], []
+    for kw in keywords:
+        clauses.append("(s.study_title ILIKE %s OR s.study_abstract ILIKE %s)")
+        params.extend([f"%{kw}%", f"%{kw}%"])
+
+    where = f" {match_mode} ".join(clauses)
+    return search_studies_with_sql(where, params, 50)
+
+
 def search_studies_with_sql(custom_sql_where="", params=None, limit=50):
     """
     Search studies using custom SQL WHERE clause

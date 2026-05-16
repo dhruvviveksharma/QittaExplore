@@ -4,8 +4,7 @@ from flask import Response, jsonify, request, stream_with_context
 
 from run import app
 from config import GLOBAL_CHAT_SYSTEM_PROMPT
-from services.llm import llm_query_to_sql
-from services.study_service import search_studies_with_sql
+from services.study_service import search_studies_with_sql, search_studies_from_plan
 from store import (
     SCOPE_GLOBAL,
     append_global_chat_messages,
@@ -22,6 +21,7 @@ from helpers.llm_helpers import (
     _build_global_search_context,
     merge_global_chat_context,
     llm_chat_stream,
+    llm_plan_query,
     friendly_llm_error,
 )
 from helpers.qiita_fetch import (
@@ -107,17 +107,18 @@ def api_global_chat_message_stream(chat_id):
                     yield _sse("step_done", {"name": "load_samples", "label": f"Study {report_study_id} is private — no accessible data"})
                     ui_payload = None
             else:
-                yield _sse("step_start", {"name": "translate_query", "label": "Translating query…"})
-                sql_spec = llm_query_to_sql(user_content)
-                yield _sse("step_done", {"name": "translate_query", "label": "Query translated"})
+                yield _sse("step_start", {"name": "translate_query", "label": "Planning query…"})
+                plan = llm_plan_query(full_msgs)
+                yield _sse("step_done", {"name": "translate_query", "label": "Query planned", "detail": plan["description"]})
+                yield _sse("query_plan", {
+                    "description": plan["description"],
+                    "keywords": plan.get("keywords", []),
+                    "match_mode": plan.get("match_mode", "AND"),
+                })
                 yield ': keepalive\n\n'
                 yield _sse("step_start", {"name": "search_db", "label": "Searching Qiita database…"})
                 try:
-                    studies = search_studies_with_sql(
-                        sql_spec.get("where_clause", "1=1"),
-                        sql_spec.get("params", []),
-                        limit=sql_spec.get("search_limit", 50),
-                    )
+                    studies = search_studies_from_plan(plan)
                 except Exception:
                     studies = []
                 n_sel = len(selected_studies) if selected_studies else 0

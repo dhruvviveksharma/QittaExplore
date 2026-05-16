@@ -222,7 +222,7 @@ function useAppState() {
           messages: [
             ...c.messages,
             { role: 'user',      content: userMsg },
-            { role: 'assistant', content: '', isStreaming: true, steps: [], pendingStep: null },
+            { role: 'assistant', content: '', isStreaming: true, steps: [], pendingStep: null, queryPlan: null },
           ],
         },
       };
@@ -355,6 +355,7 @@ function useAppState() {
             pendingStep: null,
             steps: [...(m.steps || []), { name, label, detail }],
           })),
+          onQueryPlan: (payload) => patchLast(chatId, m => ({ ...m, queryPlan: payload })),
           onDone:  () => {
             const title = displayMsg.slice(0, 60);
             applyStreamDone(chatId, title, reportStudyId);

@@ -359,6 +359,20 @@ function renderApp(s) {
                               )}
                             </div>
                           )}
+                          {m.queryPlan && (
+                            <div className="msg-query-plan">
+                              <span className="qp-icon">⌕</span>
+                              <span className="qp-desc">{m.queryPlan.description}</span>
+                              {(m.queryPlan.keywords || []).length > 0 && (
+                                <span className="qp-keywords">
+                                  {m.queryPlan.keywords.map(k => (
+                                    <span key={k} className="qp-kw-chip">{k}</span>
+                                  ))}
+                                </span>
+                              )}
+                              <span className="qp-mode">{m.queryPlan.match_mode}</span>
+                            </div>
+                          )}
                           {m.isStreaming && !m.content && !m.steps?.length && !m.pendingStep ? (
                             <div className="msg-bubble"><div className="typing-dots"><span/><span/><span/></div></div>
                           ) : (!m.isStreaming || m.content) ? (
