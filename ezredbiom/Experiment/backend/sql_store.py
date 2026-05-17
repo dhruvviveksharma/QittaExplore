@@ -19,6 +19,13 @@ from sql_store_crud import (  # noqa: F401
     create_global_chat,
     append_global_chat_messages,
     delete_global_chat,
+    # Tree-session helpers
+    append_entry,
+    build_chat_context,
+    set_chat_leaf,
+    append_branch_summary,
+    get_chat_tree,
+    get_branch_entries,
 )
 
 from sql_store_cache import (  # noqa: F401

@@ -32,4 +32,11 @@ from sql_store import (  # noqa: F401
     upsert_project_context_summary,
     upsert_project_study_summary,
     upsert_study_detail_cache,
+    # Tree-session helpers
+    append_entry,
+    build_chat_context,
+    set_chat_leaf,
+    append_branch_summary,
+    get_chat_tree,
+    get_branch_entries,
 )

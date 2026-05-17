@@ -45,6 +45,38 @@ def _parse_tinydb_docs(path):
         return []
 
 
+def _backfill_tree_columns(conn):
+    """Assign entry_id / parent_id to existing rows that predate the tree schema."""
+    # Find all chats that have rows without entry_id
+    chats = conn.execute(
+        "SELECT DISTINCT chat_id FROM project_chat_messages WHERE entry_id IS NULL"
+    ).fetchall()
+    for chat_row in chats:
+        chat_id = chat_row["chat_id"]
+        rows = conn.execute(
+            "SELECT id FROM project_chat_messages WHERE chat_id = ? ORDER BY id ASC",
+            (chat_id,),
+        ).fetchall()
+        prev_entry_id = None
+        for row in rows:
+            eid = uuid.uuid4().hex[:8]
+            conn.execute(
+                "UPDATE project_chat_messages SET entry_id = ?, parent_id = ?, entry_type = ? WHERE id = ?",
+                (eid, prev_entry_id, "message", row["id"]),
+            )
+            prev_entry_id = eid
+        # Set leaf to the last entry
+        if prev_entry_id:
+            conn.execute(
+                """
+                INSERT INTO project_chat_state(chat_id, leaf_id)
+                VALUES(?, ?)
+                ON CONFLICT(chat_id) DO NOTHING
+                """,
+                (chat_id, prev_entry_id),
+            )
+
+
 def _create_schema(conn):
     conn.executescript(
         """
@@ -172,6 +204,41 @@ def _create_schema(conn):
             conn.execute(f"ALTER TABLE {tbl} ADD COLUMN ui_payload TEXT")
         except Exception:
             pass
+
+    # Tree-structured session columns for project_chat_messages
+    for col, definition in [
+        ("entry_id",     "TEXT"),
+        ("parent_id",    "TEXT"),
+        ("entry_type",   "TEXT"),
+        ("tool_call_id", "TEXT"),
+        ("tool_name",    "TEXT"),
+        ("tool_args",    "TEXT"),
+        ("tool_details", "TEXT"),
+        ("is_error",     "INTEGER"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE project_chat_messages ADD COLUMN {col} {definition}")
+        except Exception:
+            pass
+
+    # Tracks the active leaf (current position) for each chat
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS project_chat_state (
+            chat_id TEXT PRIMARY KEY,
+            leaf_id TEXT NOT NULL,
+            FOREIGN KEY (chat_id) REFERENCES project_chats(chat_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_pcm_entry_id
+            ON project_chat_messages(entry_id) WHERE entry_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_pcm_parent_id
+            ON project_chat_messages(chat_id, parent_id);
+        """
+    )
+
+    # Back-fill entry_id/parent_id for existing rows (linear chain by id ASC per chat)
+    _backfill_tree_columns(conn)
 
 
 def _mark_migration(conn):

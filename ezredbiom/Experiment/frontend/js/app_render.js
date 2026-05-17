@@ -347,8 +347,8 @@ function renderApp(s) {
                           {(m.steps?.length > 0 || m.pendingStep) && (
                             <div className="msg-steps">
                               {(m.steps || []).map((step, si) => (
-                                <div key={si} className="msg-step-done">
-                                  <span className="step-dot" />
+                                <div key={si} className={`msg-step-done${step.isError ? ' step-error' : ''}`}>
+                                  <span className={`step-dot${step.isError ? ' step-dot-error' : ''}`} />
                                   <span className="step-label">{step.label}</span>
                                   {step.detail && <span className="step-detail"> · {step.detail}</span>}
                                 </div>

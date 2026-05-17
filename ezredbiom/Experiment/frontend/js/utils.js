@@ -49,13 +49,16 @@ async function parseSSE(response, { onToken, onUi, onDone, onError, onStepStart,
       }
       let payload = {};
       try { payload = JSON.parse(data); } catch (_) {}
-      if (type === 'token'      && onToken)     onToken(payload);
-      if (type === 'ui'         && onUi)        onUi(payload);
-      if (type === 'done'       && onDone)      onDone(payload);
-      if (type === 'error'      && onError)     onError(payload);
-      if (type === 'step_start'  && onStepStart)  onStepStart(payload);
-      if (type === 'step_done'   && onStepDone)   onStepDone(payload);
-      if (type === 'query_plan'  && onQueryPlan)  onQueryPlan(payload);
+      if (type === 'token'            && onToken)      onToken(payload);
+      if (type === 'ui'               && onUi)         onUi(payload);
+      if (type === 'done'             && onDone)       onDone(payload);
+      if (type === 'error'            && onError)      onError(payload);
+      if (type === 'step_start'       && onStepStart)  onStepStart(payload);
+      if (type === 'step_done'        && onStepDone)   onStepDone(payload);
+      if (type === 'query_plan'       && onQueryPlan)  onQueryPlan(payload);
+      // Tool-call events from agent loop → reuse step visualization
+      if (type === 'tool_call_start'  && onStepStart)  onStepStart({ name: payload.name, label: payload.label || payload.name });
+      if (type === 'tool_call_done'   && onStepDone)   onStepDone({ name: payload.name, label: payload.label || payload.name, detail: payload.detail, isError: payload.is_error });
     }
   }
 }

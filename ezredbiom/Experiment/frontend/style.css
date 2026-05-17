@@ -430,6 +430,8 @@ input, textarea { font-family: var(--sans); }
 }
 .step-label { color: var(--text-2); }
 .step-detail { color: var(--text-3); }
+.step-error .step-label { color: #e57373; }
+.step-dot-error { background: #e57373 !important; }
 .step-spinner {
   width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
   border: 1.5px solid transparent;

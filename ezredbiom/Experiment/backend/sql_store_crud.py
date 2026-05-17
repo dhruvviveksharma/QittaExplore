@@ -498,3 +498,268 @@ def delete_global_chat(user_id: str, chat_id: str):
         )
         conn.commit()
     return {"ok": True}
+
+
+# ============================================================================
+# Tree-session helpers
+# ============================================================================
+
+def _gen_entry_id() -> str:
+    return uuid.uuid4().hex[:8]
+
+
+def _get_leaf_id(conn, chat_id: str):
+    row = conn.execute(
+        "SELECT leaf_id FROM project_chat_state WHERE chat_id = ?",
+        (chat_id,),
+    ).fetchone()
+    return row["leaf_id"] if row else None
+
+
+def _set_leaf_id(conn, chat_id: str, leaf_id: str):
+    conn.execute(
+        """
+        INSERT INTO project_chat_state(chat_id, leaf_id)
+        VALUES(?, ?)
+        ON CONFLICT(chat_id) DO UPDATE SET leaf_id = excluded.leaf_id
+        """,
+        (chat_id, leaf_id),
+    )
+
+
+def append_entry(
+    chat_id: str,
+    role: str,
+    content: str,
+    *,
+    entry_type: str = "message",
+    tool_call_id: str = None,
+    tool_name: str = None,
+    tool_args: dict = None,
+    tool_details: dict = None,
+    ui_payload: dict = None,
+    is_error: bool = False,
+) -> str:
+    """Append a new entry as a child of the current leaf. Returns the new entry_id."""
+    now = _now()
+    with _conn() as conn:
+        parent_id = _get_leaf_id(conn, chat_id)
+        entry_id = _gen_entry_id()
+        conn.execute(
+            """
+            INSERT INTO project_chat_messages(
+                chat_id, role, content, entry_id, parent_id, entry_type,
+                tool_call_id, tool_name, tool_args, tool_details,
+                ui_payload, is_error, created_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                chat_id,
+                role,
+                content or "",
+                entry_id,
+                parent_id,
+                entry_type,
+                tool_call_id,
+                tool_name,
+                json.dumps(tool_args) if tool_args else None,
+                json.dumps(tool_details) if tool_details else None,
+                json.dumps(ui_payload) if ui_payload else None,
+                1 if is_error else 0,
+                now,
+            ),
+        )
+        _set_leaf_id(conn, chat_id, entry_id)
+        conn.commit()
+    return entry_id
+
+
+def get_branch_entries(chat_id: str, from_entry_id: str = None):
+    """Walk from from_entry_id (or current leaf) to root, return path in chronological order."""
+    with _conn() as conn:
+        if from_entry_id is None:
+            from_entry_id = _get_leaf_id(conn, chat_id)
+        if not from_entry_id:
+            # Fall back to linear read for older chats without leaf tracking
+            rows = conn.execute(
+                "SELECT * FROM project_chat_messages WHERE chat_id = ? ORDER BY id ASC",
+                (chat_id,),
+            ).fetchall()
+            return [_as_dict(r) for r in rows]
+
+        # Build index: entry_id -> row
+        all_rows = conn.execute(
+            "SELECT * FROM project_chat_messages WHERE chat_id = ?",
+            (chat_id,),
+        ).fetchall()
+    by_id = {r["entry_id"]: _as_dict(r) for r in all_rows if r["entry_id"]}
+
+    # Walk from leaf to root
+    path = []
+    current = from_entry_id
+    visited = set()
+    while current and current not in visited:
+        visited.add(current)
+        row = by_id.get(current)
+        if not row:
+            break
+        path.append(row)
+        current = row.get("parent_id")
+
+    path.reverse()
+    return path
+
+
+def build_chat_context(chat_id: str):
+    """
+    Walk the active branch and produce an OpenAI-compatible message list.
+    Handles message, tool_call (in assistant), and tool_result entry types.
+    Groups consecutive tool_calls from the same assistant turn.
+    """
+    entries = get_branch_entries(chat_id)
+    messages = []
+    i = 0
+    while i < len(entries):
+        e = entries[i]
+        etype = e.get("entry_type") or "message"
+        role = e.get("role") or "user"
+
+        if etype == "branch_summary":
+            # Inject as a user message so LLM sees context from abandoned branch
+            messages.append({"role": "user", "content": f"[Branch context]\n{e.get('content', '')}"})
+            i += 1
+            continue
+
+        if role in ("user", "assistant") and etype == "message":
+            # Collect any tool_calls that immediately follow in the same assistant turn
+            if role == "assistant":
+                # Peek ahead for tool_call entries
+                tool_calls = []
+                j = i + 1
+                while j < len(entries):
+                    ne = entries[j]
+                    if (ne.get("entry_type") == "tool_call" and ne.get("role") == "assistant"):
+                        raw_args = ne.get("tool_args") or "{}"
+                        try:
+                            parsed_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                        except Exception:
+                            parsed_args = {}
+                        tool_calls.append({
+                            "id": ne.get("tool_call_id") or ne.get("entry_id"),
+                            "type": "function",
+                            "function": {
+                                "name": ne.get("tool_name") or "",
+                                "arguments": json.dumps(parsed_args),
+                            },
+                        })
+                        j += 1
+                    else:
+                        break
+                msg = {"role": "assistant", "content": e.get("content") or ""}
+                if tool_calls:
+                    msg["tool_calls"] = tool_calls
+                messages.append(msg)
+                i = j  # skip the tool_call entries we peeked
+            else:
+                messages.append({"role": "user", "content": e.get("content") or ""})
+                i += 1
+            continue
+
+        if role == "tool" or etype == "tool_result":
+            messages.append({
+                "role": "tool",
+                "tool_call_id": e.get("tool_call_id") or e.get("entry_id"),
+                "content": e.get("content") or "",
+            })
+            i += 1
+            continue
+
+        # Skip metadata entries (e.g. branch_summary that wasn't caught above)
+        i += 1
+
+    return messages
+
+
+def set_chat_leaf(chat_id: str, entry_id: str) -> bool:
+    """Move the chat's active leaf to a specific entry (for branching)."""
+    with _conn() as conn:
+        # Verify the entry belongs to this chat
+        row = conn.execute(
+            "SELECT entry_id FROM project_chat_messages WHERE chat_id = ? AND entry_id = ?",
+            (chat_id, entry_id),
+        ).fetchone()
+        if not row:
+            return False
+        _set_leaf_id(conn, chat_id, entry_id)
+        conn.commit()
+    return True
+
+
+def append_branch_summary(chat_id: str, from_entry_id: str, summary: str, resources: dict = None) -> str:
+    """Append a branch_summary entry carrying context from an abandoned path."""
+    with _conn() as conn:
+        parent_id = _get_leaf_id(conn, chat_id)
+        entry_id = _gen_entry_id()
+        now = _now()
+        conn.execute(
+            """
+            INSERT INTO project_chat_messages(
+                chat_id, role, content, entry_id, parent_id, entry_type,
+                tool_details, created_at
+            ) VALUES(?, 'system', ?, ?, ?, 'branch_summary', ?, ?)
+            """,
+            (
+                chat_id,
+                summary,
+                entry_id,
+                parent_id,
+                json.dumps({"from_id": from_entry_id, **(resources or {})}),
+                now,
+            ),
+        )
+        _set_leaf_id(conn, chat_id, entry_id)
+        conn.commit()
+    return entry_id
+
+
+def get_chat_tree(chat_id: str) -> dict:
+    """Return the full tree structure as {entry_id: {row, children: [entry_id, ...]}}."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT entry_id, parent_id, role, content, entry_type, tool_name, created_at "
+            "FROM project_chat_messages WHERE chat_id = ? AND entry_id IS NOT NULL ORDER BY id ASC",
+            (chat_id,),
+        ).fetchall()
+        leaf_id = _get_leaf_id(conn, chat_id)
+
+    nodes = {}
+    for r in rows:
+        eid = r["entry_id"]
+        nodes[eid] = {
+            "entry_id": eid,
+            "parent_id": r["parent_id"],
+            "role": r["role"],
+            "label": _entry_label(r),
+            "entry_type": r["entry_type"],
+            "created_at": r["created_at"],
+            "children": [],
+        }
+    for eid, node in nodes.items():
+        pid = node["parent_id"]
+        if pid and pid in nodes:
+            nodes[pid]["children"].append(eid)
+
+    return {"nodes": nodes, "leaf_id": leaf_id}
+
+
+def _entry_label(row) -> str:
+    etype = row["entry_type"] or "message"
+    role = row["role"] or "user"
+    if etype == "tool_call":
+        return f"tool: {row['tool_name'] or '?'}"
+    if etype == "tool_result":
+        return "tool result"
+    if etype == "branch_summary":
+        return "branch summary"
+    content = (row["content"] or "")[:60]
+    return f"{role}: {content}"
