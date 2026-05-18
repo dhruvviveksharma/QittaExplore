@@ -163,6 +163,18 @@ class ToolResult:
     is_error: bool = False
 
 
+def _empty_resources() -> dict:
+    return {"resources_read": [], "resources_modified": []}
+
+
+def _error_result(message: str) -> ToolResult:
+    return ToolResult(content=message, details=_empty_resources(), is_error=True)
+
+
+def _empty_result(message: str) -> ToolResult:
+    return ToolResult(content=message, details=_empty_resources())
+
+
 # --------------------------------------------------------------------------- #
 # Tool definitions
 # --------------------------------------------------------------------------- #
@@ -193,22 +205,15 @@ def _schema(*props_pairs, required=None):
 
 def _exec_list_project_studies(args: dict) -> ToolResult:
     from helpers.llm_helpers import _study_discovery_compact_block
-    from store import get_project_studies_only
+    from sql_store import get_project_studies_only
 
     project_id = args.get("project_id", "")
     proj = get_project_studies_only(project_id)
     if not proj:
-        return ToolResult(
-            content=f"Project '{project_id}' not found.",
-            details={"resources_read": [], "resources_modified": []},
-            is_error=True,
-        )
+        return _error_result(f"Project '{project_id}' not found.")
     studies = proj.get("studies") or []
     if not studies:
-        return ToolResult(
-            content="No studies in this project.",
-            details={"resources_read": [], "resources_modified": []},
-        )
+        return _empty_result("No studies in this project.")
     lines = [_study_discovery_compact_block(s) for s in studies]
     raw = "\n\n".join(lines)
     res = truncate_head(raw)
@@ -248,10 +253,7 @@ def _exec_search_studies(args: dict) -> ToolResult:
     limit = max(1, min(50, int(args.get("limit") or 20)))
 
     if not keywords:
-        return ToolResult(
-            content="No keywords provided.",
-            details={"resources_read": [], "resources_modified": []},
-        )
+        return _empty_result("No keywords provided.")
 
     # Reuse existing SQL builder via a synthetic query string
     query_str = (" OR " if match_mode == "OR" else " ") .join(keywords)
@@ -277,17 +279,10 @@ def _exec_search_studies(args: dict) -> ToolResult:
             rows = TRN.execute_fetchall()
         studies = [dict(zip(["study_id","study_title","study_abstract","pi_name","pi_affiliation","num_samples","num_preps","data_types"], r)) for r in rows]
     except Exception as e:
-        return ToolResult(
-            content=f"Search failed: {e}",
-            details={"resources_read": [], "resources_modified": []},
-            is_error=True,
-        )
+        return _error_result(f"Search failed: {e}")
 
     if not studies:
-        return ToolResult(
-            content=f"No studies found for keywords: {', '.join(keywords)}",
-            details={"resources_read": [], "resources_modified": []},
-        )
+        return _empty_result(f"No studies found for keywords: {', '.join(keywords)}")
 
     lines = [_study_discovery_compact_block(s) for s in studies]
     raw = "\n\n".join(lines)
@@ -326,16 +321,12 @@ _SEARCH_STUDIES = _tool(
 def _exec_get_study_detail(args: dict) -> ToolResult:
     from helpers.llm_helpers import _study_detail_block
     from helpers.qiita_fetch import _fetch_sample_context_text
-    from store import get_study_detail_cache, upsert_study_detail_cache
+    from sql_store import get_study_detail_cache, upsert_study_detail_cache
 
     try:
         study_id = int(args.get("study_id"))
     except (TypeError, ValueError):
-        return ToolResult(
-            content="study_id must be an integer.",
-            details={"resources_read": [], "resources_modified": []},
-            is_error=True,
-        )
+        return _error_result("study_id must be an integer.")
 
     include_samples = bool(args.get("include_samples", False))
 
@@ -369,19 +360,11 @@ def _exec_get_study_detail(args: dict) -> ToolResult:
             TRN.add(sql, [study_id])
             rows = TRN.execute_fetchall()
         if not rows:
-            return ToolResult(
-                content=f"Study {study_id} not found in Qiita.",
-                details={"resources_read": [], "resources_modified": []},
-                is_error=True,
-            )
+            return _error_result(f"Study {study_id} not found in Qiita.")
         r = rows[0]
         study = dict(zip(["study_id","study_title","study_abstract","pi_name","pi_email","pi_affiliation","lab_person_name"], r))
     except Exception as e:
-        return ToolResult(
-            content=f"Failed to fetch study {study_id}: {e}",
-            details={"resources_read": [], "resources_modified": []},
-            is_error=True,
-        )
+        return _error_result(f"Failed to fetch study {study_id}: {e}")
 
     study["samples_context"] = samples_context
     block = _study_detail_block(study, include_samples_context=include_samples)
@@ -423,26 +406,14 @@ def _exec_get_samples_report(args: dict) -> ToolResult:
     try:
         study_id = int(args.get("study_id"))
     except (TypeError, ValueError):
-        return ToolResult(
-            content="study_id must be an integer.",
-            details={"resources_read": [], "resources_modified": []},
-            is_error=True,
-        )
+        return _error_result("study_id must be an integer.")
 
     try:
         payload = _build_samples_report_payload(study_id)
     except ValueError as e:
-        return ToolResult(
-            content=str(e),
-            details={"resources_read": [], "resources_modified": []},
-            is_error=True,
-        )
+        return _error_result(str(e))
     except Exception as e:
-        return ToolResult(
-            content=f"Failed to load samples for study {study_id}: {e}",
-            details={"resources_read": [], "resources_modified": []},
-            is_error=True,
-        )
+        return _error_result(f"Failed to load samples for study {study_id}: {e}")
 
     header = payload.get("header") or {}
     num_samples = header.get("num_samples") or len(payload.get("samples") or [])
@@ -514,19 +485,11 @@ def execute_tool(name: str, args: dict) -> ToolResult:
     """Dispatch a tool call by name. Returns ToolResult (never raises)."""
     tool = _ALL_TOOLS.get(name)
     if not tool:
-        return ToolResult(
-            content=f"Unknown tool: {name}",
-            details={"resources_read": [], "resources_modified": []},
-            is_error=True,
-        )
+        return _error_result(f"Unknown tool: {name}")
     try:
         return tool["execute"](args)
     except Exception as e:
-        return ToolResult(
-            content=f"Tool '{name}' raised an error: {e}",
-            details={"resources_read": [], "resources_modified": []},
-            is_error=True,
-        )
+        return _error_result(f"Tool '{name}' raised an error: {e}")
 
 
 def get_tool_label(name: str) -> str:

@@ -20,7 +20,15 @@ from sql_store_crud import append_entry, build_chat_context
 
 logger = logging.getLogger(__name__)
 
-MAX_ITERATIONS = 8   # bound the agentic loop like pi's runtime guard
+MAX_ITERATIONS = 8
+_PROJECT_ID_TOOLS = {"list_project_studies"}
+
+
+def _parse_tool_args(arg_str: str) -> dict:
+    try:
+        return json.loads(arg_str or "{}")
+    except Exception:
+        return {}
 
 
 def _build_system_prompt(project_context) -> str:
@@ -125,32 +133,21 @@ def run_agent_turn(
                 chat_id, "assistant", assistant_text, entry_type="message"
             )
             for tc in tool_calls:
-                try:
-                    parsed_args = json.loads(tc["arguments"] or "{}")
-                except Exception:
-                    parsed_args = {}
                 append_entry(
                     chat_id, "assistant", "",
                     entry_type="tool_call",
                     tool_call_id=tc["id"],
                     tool_name=tc["name"],
-                    tool_args=parsed_args,
+                    tool_args=_parse_tool_args(tc["arguments"]),
                 )
 
             # Execute each tool call
             for tc in tool_calls:
                 name = tc["name"]
                 label = get_tool_label(name)
-                try:
-                    parsed_args = json.loads(tc["arguments"] or "{}")
-                except Exception:
-                    parsed_args = {}
+                parsed_args = _parse_tool_args(tc["arguments"])
 
-                # Inject project_id automatically for tools that need it
-                if "project_id" in (get_tool_schemas()[0]["function"]["parameters"].get("properties") or {}):
-                    parsed_args.setdefault("project_id", project_id)
-                # Always inject project_id for list_project_studies
-                if name == "list_project_studies":
+                if name in _PROJECT_ID_TOOLS:
                     parsed_args["project_id"] = project_id
 
                 yield _sse("tool_call_start", {

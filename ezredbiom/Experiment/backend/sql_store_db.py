@@ -18,6 +18,10 @@ def _now():
     return datetime.utcnow().isoformat() + "Z"
 
 
+def _resolve_user(user_id) -> str:
+    return (user_id or "").strip() or "default"
+
+
 def _conn():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row

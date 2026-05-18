@@ -3,7 +3,7 @@
 import json
 import uuid
 
-from sql_store_db import _conn, _as_dict, _now
+from sql_store_db import _conn, _as_dict, _now, _resolve_user
 
 
 def _project_exists(conn, project_id, user_id):
@@ -15,7 +15,7 @@ def _project_exists(conn, project_id, user_id):
 
 
 def list_projects(user_id: str, limit: int = 100):
-    user_id = (user_id or "").strip() or "default"
+    user_id = _resolve_user(user_id)
     limit = max(1, min(500, int(limit)))
     with _conn() as conn:
         rows = conn.execute(
@@ -101,7 +101,7 @@ def _load_project_chats(conn, project_id):
 
 
 def create_project(user_id: str, name: str):
-    user_id = (user_id or "").strip() or "default"
+    user_id = _resolve_user(user_id)
     name = (name or "Untitled").strip() or "Untitled"
     project_id = str(uuid.uuid4())[:8]
     now = _now()
@@ -120,7 +120,7 @@ def create_project(user_id: str, name: str):
 def get_project(project_id: str, user_id: str = None):
     with _conn() as conn:
         if user_id is not None:
-            resolved_user = (user_id or "").strip() or "default"
+            resolved_user = _resolve_user(user_id)
             row = conn.execute(
                 "SELECT project_id, user_id, name, created_at, updated_at FROM projects WHERE project_id = ? AND user_id = ?",
                 (project_id, resolved_user),
@@ -144,7 +144,7 @@ def get_project(project_id: str, user_id: str = None):
 
 
 def update_project(project_id: str, user_id: str, name: str = None):
-    resolved_user = (user_id or "").strip() or "default"
+    resolved_user = _resolve_user(user_id)
     with _conn() as conn:
         if not _project_exists(conn, project_id, resolved_user):
             return None
@@ -164,7 +164,7 @@ def update_project(project_id: str, user_id: str, name: str = None):
 
 
 def delete_project(project_id: str, user_id: str):
-    resolved_user = (user_id or "").strip() or "default"
+    resolved_user = _resolve_user(user_id)
     with _conn() as conn:
         conn.execute(
             "DELETE FROM projects WHERE project_id = ? AND user_id = ?",
@@ -175,7 +175,7 @@ def delete_project(project_id: str, user_id: str):
 
 
 def add_study_to_project(project_id: str, user_id: str, study: dict):
-    resolved_user = (user_id or "").strip() or "default"
+    resolved_user = _resolve_user(user_id)
     if not study or study.get("study_id") is None:
         return None
     with _conn() as conn:
@@ -222,7 +222,7 @@ def add_study_to_project(project_id: str, user_id: str, study: dict):
 
 
 def remove_study_from_project(project_id: str, user_id: str, study_id):
-    resolved_user = (user_id or "").strip() or "default"
+    resolved_user = _resolve_user(user_id)
     with _conn() as conn:
         if not _project_exists(conn, project_id, resolved_user):
             return None
@@ -257,7 +257,7 @@ def get_project_studies_only(project_id: str):
 
 
 def list_chats(project_id: str, user_id: str, limit: int = 200):
-    resolved_user = (user_id or "").strip() or "default"
+    resolved_user = _resolve_user(user_id)
     limit = max(1, min(500, int(limit)))
     with _conn() as conn:
         if not _project_exists(conn, project_id, resolved_user):
@@ -278,7 +278,7 @@ def list_chats(project_id: str, user_id: str, limit: int = 200):
 
 def get_chat(project_id: str, user_id: str, chat_id: str):
     from sql_store_cache import SCOPE_PROJECT, _load_pinned_studies
-    resolved_user = (user_id or "").strip() or "default"
+    resolved_user = _resolve_user(user_id)
     with _conn() as conn:
         row = conn.execute(
             """
@@ -302,7 +302,7 @@ def get_chat(project_id: str, user_id: str, chat_id: str):
 
 
 def create_chat(project_id: str, user_id: str, first_message: str = None):
-    resolved_user = (user_id or "").strip() or "default"
+    resolved_user = _resolve_user(user_id)
     with _conn() as conn:
         if not _project_exists(conn, project_id, resolved_user):
             return None
@@ -359,7 +359,7 @@ def append_chat_messages(
     assistant_content: str,
     assistant_ui_payload: dict = None,
 ):
-    resolved_user = (user_id or "").strip() or "default"
+    resolved_user = _resolve_user(user_id)
     with _conn() as conn:
         exists = conn.execute(
             "SELECT chat_id, title FROM project_chats WHERE project_id = ? AND user_id = ? AND chat_id = ?",
@@ -388,7 +388,7 @@ def append_chat_messages(
 
 
 def delete_chat(project_id: str, user_id: str, chat_id: str):
-    resolved_user = (user_id or "").strip() or "default"
+    resolved_user = _resolve_user(user_id)
     with _conn() as conn:
         conn.execute(
             "DELETE FROM project_chats WHERE project_id = ? AND user_id = ? AND chat_id = ?",
@@ -403,7 +403,7 @@ def delete_chat(project_id: str, user_id: str, chat_id: str):
 
 
 def list_global_chats(user_id: str, limit: int = 200):
-    resolved_user = (user_id or "").strip() or "default"
+    resolved_user = _resolve_user(user_id)
     limit = max(1, min(500, int(limit)))
     with _conn() as conn:
         rows = conn.execute(
@@ -430,7 +430,7 @@ def _load_global_messages(conn, chat_id):
 
 def get_global_chat(user_id: str, chat_id: str):
     from sql_store_cache import SCOPE_GLOBAL, _load_pinned_studies
-    resolved_user = (user_id or "").strip() or "default"
+    resolved_user = _resolve_user(user_id)
     with _conn() as conn:
         row = conn.execute(
             "SELECT chat_id, title, created_at, updated_at FROM global_chats WHERE user_id = ? AND chat_id = ?",
@@ -445,7 +445,7 @@ def get_global_chat(user_id: str, chat_id: str):
 
 
 def create_global_chat(user_id: str, title: str = None):
-    resolved_user = (user_id or "").strip() or "default"
+    resolved_user = _resolve_user(user_id)
     chat_id = str(uuid.uuid4())[:8]
     now = _now()
     resolved_title = (title or "New chat")[:60].strip() or "New chat"
@@ -465,7 +465,7 @@ def append_global_chat_messages(
     assistant_content: str,
     assistant_ui_payload: dict = None,
 ):
-    resolved_user = (user_id or "").strip() or "default"
+    resolved_user = _resolve_user(user_id)
     with _conn() as conn:
         row = conn.execute(
             "SELECT title FROM global_chats WHERE user_id = ? AND chat_id = ?",
@@ -490,7 +490,7 @@ def append_global_chat_messages(
 
 
 def delete_global_chat(user_id: str, chat_id: str):
-    resolved_user = (user_id or "").strip() or "default"
+    resolved_user = _resolve_user(user_id)
     with _conn() as conn:
         conn.execute(
             "DELETE FROM global_chats WHERE user_id = ? AND chat_id = ?",

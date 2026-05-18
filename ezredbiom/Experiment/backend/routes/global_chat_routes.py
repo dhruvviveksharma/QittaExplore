@@ -5,7 +5,7 @@ from flask import Response, jsonify, request, stream_with_context
 from run import app
 from config import GLOBAL_CHAT_SYSTEM_PROMPT
 from services.study_service import search_studies_with_sql, search_studies_from_plan
-from store import (
+from sql_store import (
     SCOPE_GLOBAL,
     append_global_chat_messages,
     create_global_chat,

@@ -35,7 +35,7 @@ def friendly_llm_error(exc, model=None):
         name = model or "the selected model"
         return f"{name} is currently unavailable on NRP-Nautilus. Try selecting a different model from the dropdown below the chat box."
     return raw
-from store import (
+from sql_store import (
     get_project_context_summary,
     get_study_detail_cache,
     upsert_study_detail_cache,

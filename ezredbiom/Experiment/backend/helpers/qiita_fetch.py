@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from qiita_db.sql_connection import TRN
 
 from config import REPORT_SAMPLE_LIMIT, PINNED_REPORT_CONTEXT_MAX_CHARS, PINNED_REPORT_MIN_PER_STUDY
-from store import (
+from sql_store import (
     PINNED_STUDIES_PER_CHAT_CAP,
     SCOPE_PROJECT,
     get_study_detail_cache,

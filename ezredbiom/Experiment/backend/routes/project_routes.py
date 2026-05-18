@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from flask import jsonify, request
 
 from run import app, _bg_executor
-from store import (
+from sql_store import (
     add_study_to_project,
     create_project,
     delete_project,

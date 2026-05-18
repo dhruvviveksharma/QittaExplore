@@ -10,7 +10,7 @@ from run import app
 from config import client, ALLOWED_MODELS, MODEL_METADATA
 from services.llm import llm_query_to_sql
 from services.study_service import search_studies_with_sql
-from store import get_study_detail_cache, upsert_study_detail_cache
+from sql_store import get_study_detail_cache, upsert_study_detail_cache
 from helpers.qiita_fetch import (
     first_studies,
     is_study_public,

@@ -4,7 +4,7 @@ import os
 from flask import Response, jsonify, request, stream_with_context
 
 from run import app
-from store import (
+from sql_store import (
     SCOPE_PROJECT,
     append_chat_messages,
     create_chat,
@@ -21,6 +21,7 @@ from store import (
     set_chat_leaf,
     append_branch_summary,
     get_chat_tree,
+    get_branch_entries,
 )
 from helpers.llm_helpers import (
     _sse,
@@ -38,6 +39,51 @@ from helpers.qiita_fetch import (
 USE_AGENT_LOOP = os.getenv("USE_AGENT_LOOP", "1").strip().lower() not in ("0", "false", "no")
 
 logger = logging.getLogger(__name__)
+
+
+def _legacy_stream(
+    proj, chat_id, project_id, user_id, messages, user_content, model,
+    pinned_studies=None, token_extra=None, done_extra=None,
+):
+    """Shared SSE generator: build context → deep context → LLM stream → persist."""
+    num_proj_studies = len((proj or {}).get("studies") or [])
+    yield _sse("step_start", {"name": "build_context", "label": "Loading study context…"})
+    study_ctx = _build_project_study_context(proj, user_id=user_id)
+    yield _sse("step_done", {"name": "build_context", "label": "Study context ready", "detail": f"{num_proj_studies} studies"})
+    yield ': keepalive\n\n'
+
+    detected_ids = _detect_mentioned_study_ids(user_content, proj)
+    extra_pinned = [s for s in (pinned_studies or []) if s not in detected_ids]
+    deep_ids = list(dict.fromkeys(detected_ids + extra_pinned))
+
+    deep_ctx = None
+    if deep_ids:
+        if detected_ids:
+            ids_label = f"study {detected_ids[0]}" if len(detected_ids) == 1 else f"{len(detected_ids)} studies"
+            fetch_label, done_label = f"Fetching data for {ids_label}…", "Study data ready"
+        else:
+            fetch_label, done_label = "Loading pinned study data…", "Pinned reports ready"
+        yield _sse("step_start", {"name": "deep_context", "label": fetch_label})
+        deep_ctx = _build_pinned_reports_context(deep_ids)
+        yield _sse("step_done", {"name": "deep_context", "label": done_label, "detail": f"{len(deep_ids)} studies"})
+        yield ': keepalive\n\n'
+
+    combined_ctx = "\n\n".join(x for x in (study_ctx, deep_ctx) if x) or None
+    yield _sse("step_start", {"name": "llm_generate", "label": "Generating response…"})
+    assistant_parts = []
+    for token in llm_chat_stream(messages, study_context_text=combined_ctx, model=model):
+        assistant_parts.append(token)
+        token_data = {"token": token}
+        if token_extra:
+            token_data.update(token_extra)
+        yield _sse("token", token_data)
+
+    assistant_content = "".join(assistant_parts).strip()
+    append_chat_messages(project_id, user_id, chat_id, user_content, assistant_content)
+    done_payload = {"chat_id": chat_id, "persisted": True}
+    if done_extra:
+        done_payload.update(done_extra)
+    yield _sse("done", done_payload)
 
 
 @app.route('/api/projects/<project_id>/chats', methods=['GET'])
@@ -179,32 +225,14 @@ def api_chat_message_stream(project_id, chat_id):
                     yield _sse("step_done", {"name": "load_samples", "label": f"Study {report_study_id} is private — no accessible data"})
                     ui_payload = None
             else:
-                num_proj_studies = len((proj or {}).get("studies") or [])
-                yield _sse("step_start", {"name": "build_context", "label": "Loading study context…"})
-                study_ctx = _build_project_study_context(proj, user_id=user_id)
-                yield _sse("step_done", {"name": "build_context", "label": "Study context ready", "detail": f"{num_proj_studies} studies"})
-                yield ': keepalive\n\n'
-                detected_ids   = _detect_mentioned_study_ids(user_content, proj)
-                pinned_studies = chat.get("pinned_studies") or []
-                deep_ids       = list(dict.fromkeys(detected_ids + [s for s in pinned_studies if s not in detected_ids]))
-                deep_ctx = None
-                if deep_ids:
-                    if detected_ids:
-                        ids_label = f"study {detected_ids[0]}" if len(detected_ids) == 1 else f"{len(detected_ids)} studies"
-                        fetch_label = f"Fetching data for {ids_label}…"
-                        done_label  = "Study data ready"
-                    else:
-                        fetch_label = "Loading pinned study data…"
-                        done_label  = "Pinned reports ready"
-                    yield _sse("step_start", {"name": "deep_context", "label": fetch_label})
-                    deep_ctx = _build_pinned_reports_context(deep_ids)
-                    yield _sse("step_done", {"name": "deep_context", "label": done_label, "detail": f"{len(deep_ids)} studies"})
-                    yield ': keepalive\n\n'
-                combined_ctx = "\n\n".join(x for x in (study_ctx, deep_ctx) if x) or None
-                yield _sse("step_start", {"name": "llm_generate", "label": "Generating response…"})
-                for token in llm_chat_stream(full_msgs, study_context_text=combined_ctx, model=model):
-                    assistant_parts.append(token)
-                    yield _sse("token", {"token": token})
+                pinned = chat.get("pinned_studies") or []
+                yield from _legacy_stream(
+                    proj, chat_id, project_id, user_id,
+                    full_msgs, user_content, model,
+                    pinned_studies=pinned,
+                    done_extra={"pinned_study_id": None},
+                )
+                return
             assistant_content = "".join(assistant_parts).strip()
             append_chat_messages(project_id, user_id, chat_id, user_content, assistant_content, assistant_ui_payload=ui_payload)
             if report_study_id is not None and ui_payload is not None:
@@ -240,32 +268,15 @@ def api_create_chat_stream(project_id):
     chat = create_chat(project_id, user_id, user_content)
     if not chat:
         return jsonify({'error': 'Failed to create chat'}), 500
-    num_proj_studies = len((proj or {}).get("studies") or [])
 
     def generate():
-        assistant_parts = []
         try:
             yield ': keepalive\n\n'
-            yield _sse("step_start", {"name": "build_context", "label": "Loading study context…"})
-            study_ctx = _build_project_study_context(proj, user_id=user_id)
-            yield _sse("step_done", {"name": "build_context", "label": "Study context ready", "detail": f"{num_proj_studies} studies"})
-            yield ': keepalive\n\n'
-            detected_ids = _detect_mentioned_study_ids(user_content, proj)
-            deep_ctx = None
-            if detected_ids:
-                ids_label = f"study {detected_ids[0]}" if len(detected_ids) == 1 else f"{len(detected_ids)} studies"
-                yield _sse("step_start", {"name": "deep_context", "label": f"Fetching data for {ids_label}…"})
-                deep_ctx = _build_pinned_reports_context(detected_ids)
-                yield _sse("step_done", {"name": "deep_context", "label": "Study data ready", "detail": f"{len(detected_ids)} studies"})
-                yield ': keepalive\n\n'
-            combined_ctx = "\n\n".join(x for x in (study_ctx, deep_ctx) if x) or None
-            yield _sse("step_start", {"name": "llm_generate", "label": "Generating response…"})
-            for token in llm_chat_stream([{"role": "user", "content": user_content}], study_context_text=combined_ctx, model=model):
-                assistant_parts.append(token)
-                yield _sse("token", {"token": token, "chat_id": chat["chat_id"]})
-            assistant_content = "".join(assistant_parts).strip()
-            append_chat_messages(project_id, user_id, chat["chat_id"], user_content, assistant_content)
-            yield _sse("done", {"chat_id": chat["chat_id"], "persisted": True})
+            yield from _legacy_stream(
+                proj, chat["chat_id"], project_id, user_id,
+                [{"role": "user", "content": user_content}], user_content, model,
+                token_extra={"chat_id": chat["chat_id"]},
+            )
         except Exception as e:
             logger.exception("stream error in create_chat_stream for project %s", project_id)
             yield _sse("error", {"error": friendly_llm_error(e, model), "chat_id": chat["chat_id"]})
@@ -340,65 +351,8 @@ def api_chat_branch_summary(project_id, chat_id):
         return jsonify({'error': 'from_entry_id required'}), 400
 
     if not summary:
-        # Auto-generate summary from the abandoned branch entries
-        from sql_store_crud import get_branch_entries
-        from services.agent_tools import accumulate_resources
-        import json as _json
-
-        abandoned = get_branch_entries(chat_id, from_entry_id=from_entry_id)
-        # Serialize for LLM
-        lines = []
-        for e in abandoned:
-            role = e.get('role') or 'user'
-            etype = e.get('entry_type') or 'message'
-            if etype == 'tool_call':
-                args = e.get('tool_args') or '{}'
-                lines.append(f"[Tool call: {e.get('tool_name')}] {args}")
-            elif etype == 'tool_result':
-                lines.append(f"[Tool result: {e.get('tool_name')}] {(e.get('content') or '')[:400]}")
-            elif e.get('content'):
-                lines.append(f"[{role}]: {(e.get('content') or '')[:600]}")
-
-        conversation_text = "\n\n".join(lines)
-
-        # Collect cumulative resources from tool_details
-        tool_details_list = [
-            _json.loads(e['tool_details']) if e.get('tool_details') else {}
-            for e in abandoned
-        ]
-        resources = accumulate_resources(tool_details_list)
-
-        # Call LLM for summary using pi-style format
-        from config import client, DEFAULT_MODEL
-        SUMMARY_PROMPT = (
-            "Summarize this conversation branch for context handoff. Use this format:\n\n"
-            "## Goal\n[What was attempted]\n\n"
-            "## Progress\n### Done\n- [x] [Completed]\n### In Progress\n- [ ] [Ongoing]\n\n"
-            "## Key Decisions\n- **[Decision]**: [Rationale]\n\n"
-            "## Next Steps\n1. [What should happen next]\n\n"
-            "## Critical Context\n- [Data needed to continue]\n\n"
-            "Be concise. Preserve exact IDs and field names."
-        )
-        try:
-            resp = client.chat.completions.create(
-                model=DEFAULT_MODEL,
-                messages=[
-                    {"role": "system", "content": "You are a context summarization assistant. Output only the structured summary."},
-                    {"role": "user", "content": f"<conversation>\n{conversation_text}\n</conversation>\n\n{SUMMARY_PROMPT}"},
-                ],
-            )
-            summary = (resp.choices[0].message.content or "").strip()
-        except Exception as e:
-            summary = f"Branch summary (auto-generation failed: {e})"
-
-        # Append resource tracking XML (mirrors pi's formatFileOperations)
-        reads = resources.get("resources_read") or []
-        mods = resources.get("resources_modified") or []
-        if reads:
-            summary += f"\n\n<resources-read>\n" + "\n".join(reads) + "\n</resources-read>"
-        if mods:
-            summary += f"\n\n<resources-modified>\n" + "\n".join(mods) + "\n</resources-modified>"
-
+        from services.branch_summary import generate_branch_summary
+        summary, resources = generate_branch_summary(chat_id, from_entry_id)
     else:
         resources = {}
 
