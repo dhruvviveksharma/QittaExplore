@@ -1,0 +1,4 @@
+# Runtime artifacts -- never committed.
+webhook.secret
+*.log
+frontend-repo/

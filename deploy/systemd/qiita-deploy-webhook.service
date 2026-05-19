@@ -1,0 +1,16 @@
+[Unit]
+Description=QittaExplore GitHub webhook receiver (redeploys on push to master)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/qiita-deploy/webhook.py
+Restart=on-failure
+RestartSec=5
+# Bind to loopback only; public exposure is via cloudflared.
+Environment=WEBHOOK_HOST=127.0.0.1
+Environment=WEBHOOK_PORT=9001
+
+[Install]
+WantedBy=default.target
