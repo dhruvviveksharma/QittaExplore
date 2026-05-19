@@ -9,6 +9,25 @@ conda activate qiita-web
 # Point Qiita at the repo's config file (has correct qiita-db-rc credentials)
 export QIITA_CONFIG_FP="/home/d4sharma/qiita-web/qiita_config.cfg"
 
+# Bridge to PR #3's services/study_service.py, which uses raw psycopg2
+# instead of qiita_db.TRN and reads connection params from PG_* env vars.
+# Extract them from the [postgres] section of QIITA_CONFIG_FP so the
+# secret stays in one place (already the source of truth for Qiita).
+while IFS='=' read -r k v; do
+    [[ -n "$k" ]] && export "$k=$v"
+done < <(python <<'EOF_PYTHON'
+import configparser, os
+c = configparser.ConfigParser()
+c.read(os.environ["QIITA_CONFIG_FP"])
+pg = c["postgres"]
+print(f"PG_HOST={pg['HOST']}")
+print(f"PG_PORT={pg['PORT']}")
+print(f"PG_DATABASE={pg['DATABASE']}")
+print(f"PG_USER={pg['USER']}")
+print(f"PG_PASSWORD={pg['PASSWORD']}")
+EOF_PYTHON
+)
+
 export QIITA_EXPERIMENT_DB_PATH="${QIITA_EXPERIMENT_DB_PATH:-$HOME/.qiita-experiment/projects.db}"
 mkdir -p "$(dirname "$QIITA_EXPERIMENT_DB_PATH")"
 
