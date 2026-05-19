@@ -7,8 +7,8 @@ fresh push to `master` into a running service on the public URL.
 ```
                             cloudflared.service (systemd --user)
                                     │
-                                    ▼ (named tunnel "qiita-explore")
-   GitHub master push                qiita-explore.knight-lab-dev.org
+                                    ▼ (named tunnel "qiita-explore" → two hostnames)
+   qiita-deploy.knight-lab-dev.org   qiita-explore.knight-lab-dev.org
             │                                   │
             ▼                                   ▼
    GitHub Webhook                      qiita-nginx (docker, host-net, :8081)
@@ -37,6 +37,19 @@ the `cloudflared` daemon. It does **not** need to run the Flask app
 itself; that lives on barnacle2 because of the Qiita conda env + DB
 access requirements.
 
+> **Two hostnames, one tunnel.** A single `cloudflared` daemon
+> publishes the deploy host on two CNAMEs and routes each to a
+> different local port via `~/.cloudflared/config.yml`:
+>
+> | Public hostname | Local target | What lives there |
+> |---|---|---|
+> | `qiita-explore.knight-lab-dev.org` | `127.0.0.1:8081` | nginx → static frontend + `/api/` proxy to Flask |
+> | `qiita-deploy.knight-lab-dev.org`  | `127.0.0.1:9001` | `webhook.py` (GitHub deliveries land here) |
+>
+> The GitHub webhook **must** point at `qiita-deploy.*` — `qiita-explore.*`
+> goes to nginx, which has no `/webhook` location and will silently swallow
+> the delivery as a static-file 200 (or a Cloudflare redirect on POST).
+
 ## Components
 
 | File | What it is | Where it runs |
@@ -47,7 +60,7 @@ access requirements.
 | `nginx/docker-compose.yml` | Pins `nginx:alpine`, bind-mounts `nginx.conf` + the frontend checkout, host networking so nginx reaches the barnacle SSH tunnel on `127.0.0.1:5001`. | deploy host |
 | `systemd/qiita-barnacle-tunnel.service` | `ssh -N -L 5001:localhost:5001 d4sharma@barnacle2.ucsd.edu`. Restart on failure. | deploy host (`--user` unit) |
 | `systemd/qiita-deploy-webhook.service` | Runs `webhook.py` bound to `127.0.0.1:9001`. Public exposure is via cloudflared, not direct port-binding. | deploy host (`--user` unit) |
-| `systemd/cloudflared.service` | Runs the named Cloudflare Tunnel `qiita-explore`. Routes `qiita-explore.knight-lab-dev.org` to the local nginx on `:8081`. | deploy host (`--user` unit) |
+| `systemd/cloudflared.service` | Runs the named Cloudflare Tunnel `qiita-explore`. Routes `qiita-explore.knight-lab-dev.org` to the local nginx on `:8081` and `qiita-deploy.knight-lab-dev.org` to the webhook listener on `:9001`. | deploy host (`--user` unit) |
 
 The dedicated frontend checkout lives at `$HOME/qiita-deploy/frontend-repo`
 on the deploy host (override via editing `redeploy.sh`'s `FRONTEND_REPO`).
@@ -102,8 +115,9 @@ the credential-shaped steps below are done.
    chmod 600 ~/qiita-deploy/webhook.secret
    ```
    Then in GitHub → repo Settings → Webhooks → Add webhook:
-   - Payload URL: `https://qiita-explore.knight-lab-dev.org/webhook`
-     (or whatever public path your cloudflared routes to the deploy host)
+   - Payload URL: `https://qiita-deploy.knight-lab-dev.org/webhook`
+     (this is the **webhook** hostname — *not* `qiita-explore.*`, which
+     routes to nginx; see "Two hostnames, one tunnel" above)
    - Content type: `application/json`
    - Secret: paste the contents of `webhook.secret`
    - Events: just `push`
@@ -112,10 +126,23 @@ the credential-shaped steps below are done.
    ```bash
    ~/.local/bin/cloudflared tunnel login            # OAuths the browser
    ~/.local/bin/cloudflared tunnel create qiita-explore
-   ~/.local/bin/cloudflared tunnel route dns \
-       qiita-explore qiita-explore.knight-lab-dev.org
-   # Edit ~/.cloudflared/config.yml to forward to http://localhost:8081
-   # and POST /webhook to http://localhost:9001
+   # Both hostnames are CNAMEd to the same tunnel; cloudflared
+   # picks the local target per hostname via config.yml below.
+   ~/.local/bin/cloudflared tunnel route dns qiita-explore qiita-explore.knight-lab-dev.org
+   ~/.local/bin/cloudflared tunnel route dns qiita-explore qiita-deploy.knight-lab-dev.org
+   ```
+
+   Then `~/.cloudflared/config.yml` should look like:
+   ```yaml
+   tunnel: qiita-explore
+   credentials-file: /home/<user>/.cloudflared/<tunnel-uuid>.json
+
+   ingress:
+     - hostname: qiita-explore.knight-lab-dev.org
+       service: http://localhost:8081     # nginx → frontend + /api/
+     - hostname: qiita-deploy.knight-lab-dev.org
+       service: http://localhost:9001     # webhook.py (GitHub deliveries)
+     - service: http_status:404
    ```
 
 4. **Enable + start the units.**
@@ -153,6 +180,36 @@ the credential-shaped steps below are done.
 | reset frontend checkout | `cd ~/qiita-deploy/frontend-repo && git fetch && git reset --hard origin/master` |
 | recreate nginx | `cd ~/qiita-deploy/nginx && docker compose up -d --force-recreate` |
 | restart all user units | `systemctl --user restart qiita-barnacle-tunnel qiita-deploy-webhook cloudflared` |
+
+## Troubleshooting
+
+**Pushes to `master` are not triggering a redeploy.**
+
+1. Tail `~/qiita-deploy/webhook.log`. If you see only `ping ok` entries
+   and zero lines mentioning `accepted push`, GitHub deliveries are not
+   reaching `webhook.py` at all.
+2. Check the GitHub webhook's "Recent Deliveries" page. If deliveries
+   show `200` but with an HTML body or a Cloudflare `302`, the Payload
+   URL is pointed at `qiita-explore.knight-lab-dev.org/webhook` (nginx)
+   instead of `qiita-deploy.knight-lab-dev.org/webhook` (webhook.py).
+   Fix the Payload URL and hit "Redeliver".
+3. If deliveries show `401 bad signature`, the secret on the deploy host
+   (`~/qiita-deploy/webhook.secret`) does not match the one configured
+   in GitHub. Regenerate via the step-2 command and update both sides.
+4. From the deploy host, confirm the routing end-to-end:
+   ```bash
+   curl -fsS https://qiita-deploy.knight-lab-dev.org/healthz   # → "ok"
+   curl -i -X POST https://qiita-deploy.knight-lab-dev.org/webhook \
+        -H 'X-GitHub-Event: push' --data '{}'                  # → 401 bad signature
+   ```
+   `Server: qiita-deploy-webhook/1` in the response headers confirms
+   the request landed on `webhook.py` and not on nginx or Cloudflare.
+
+**Webhook receives the push but redeploy doesn't run.**
+Check `~/qiita-deploy/redeploy.log` for a `redeploy start` entry that
+matches the SHA from `webhook.log`. If absent, inspect
+`journalctl --user -u qiita-deploy-webhook.service` for a Python
+traceback in `run_redeploy`.
 
 ## What's intentionally not here
 
