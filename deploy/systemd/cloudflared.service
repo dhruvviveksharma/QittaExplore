@@ -1,0 +1,13 @@
+[Unit]
+Description=Cloudflare Tunnel (qiita-explore)
+After=network-online.target qiita-barnacle-tunnel.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/cloudflared tunnel --no-autoupdate run qiita-explore
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

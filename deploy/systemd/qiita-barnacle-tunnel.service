@@ -1,0 +1,20 @@
+[Unit]
+Description=SSH -L tunnel from kl-remote to barnacle2 :5001 (Qiita Flask)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=BARNACLE_HOST=d4sharma@barnacle2.ucsd.edu
+ExecStart=/usr/bin/ssh -N \
+    -o BatchMode=yes \
+    -o ExitOnForwardFailure=yes \
+    -o ServerAliveInterval=30 \
+    -o ServerAliveCountMax=3 \
+    -L 5001:localhost:5001 \
+    ${BARNACLE_HOST}
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

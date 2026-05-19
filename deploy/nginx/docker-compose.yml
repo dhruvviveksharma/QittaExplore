@@ -1,0 +1,11 @@
+services:
+  qiita-nginx:
+    image: nginx:alpine
+    container_name: qiita-nginx
+    # host networking lets nginx reach 127.0.0.1:5001 (the SSH -L tunnel
+    # to barnacle2 maintained by qiita-barnacle-tunnel.service)
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - /home/kl-user/qiita-deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - /home/kl-user/qiita-deploy/frontend-repo/ezredbiom/Experiment/frontend:/usr/share/nginx/html:ro
